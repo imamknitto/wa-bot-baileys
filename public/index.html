@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WA Bot Service</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="card">
+      <header class="header">
+        <h1>WA Bot <span class="muted">Service</span></h1>
+        <span id="status" class="pill">–</span>
+      </header>
+
+      <section>
+        <h2>API Key</h2>
+        <div class="row">
+          <input id="apiKey" type="password" placeholder="nilai API_KEY dari .env" />
+          <button id="saveKey">Simpan</button>
+        </div>
+        <p class="hint">Disimpan di localStorage browser ini.</p>
+      </section>
+
+      <section>
+        <h2>Pairing</h2>
+        <div class="qr-wrap hidden" id="qrWrap">
+          <img id="qrImage" class="qr" alt="QR Code WhatsApp" width="256" height="256" />
+          <p class="hint">WhatsApp → Perangkat tertaut → Tautkan perangkat. QR diperbarui otomatis.</p>
+        </div>
+        <div class="row">
+          <button id="loginBtn" class="hidden">Mulai Pairing</button>
+          <button id="logoutBtn" class="danger hidden">Logout</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Kirim Pesan</h2>
+        <form id="sendForm">
+          <label for="to">Nomor / JID</label>
+          <input id="to" placeholder="6281234567890" required />
+          <label for="text">Pesan</label>
+          <input id="text" placeholder="hello" required />
+          <button type="submit" id="sendBtn">Kirim</button>
+        </form>
+        <pre id="sendResult" class="result hidden"></pre>
+      </section>
+
+      <section>
+        <h2>Broadcast</h2>
+        <form id="broadcastForm">
+          <label for="recipients">Nomor tujuan (satu per baris)</label>
+          <textarea id="recipients" rows="3" placeholder="6281234567890&#10;6289876543210" required></textarea>
+          <label for="broadcastText">Isi pesan</label>
+          <textarea id="broadcastText" rows="2" placeholder="Isi pesan broadcast" required></textarea>
+          <label for="delayMs">Delay antar pesan (ms)</label>
+          <input id="delayMs" type="number" min="1000" max="600000" step="500" value="3000" required />
+          <button type="submit" id="broadcastBtn">Kirim Broadcast</button>
+          <p class="hint">Delay terlalu pendek berisiko diblokir WhatsApp. Minimal 1000ms.</p>
+        </form>
+        <pre id="broadcastResult" class="result hidden"></pre>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
