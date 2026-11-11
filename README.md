@@ -1,6 +1,10 @@
 # wa-bot-service
 
-WhatsApp bot service minimal memakai [Hono](https://hono.dev) + [Baileys](https://github.com/WhiskeySockets/Baileys).
+WhatsApp bot service multi-sesi memakai [Hono](https://hono.dev) + [Baileys](https://github.com/WhiskeySockets/Baileys).
+
+Satu sesi = satu socket WhatsApp = satu baris auth di SQLite. Beberapa sesi bisa login dan mengirim pesan secara independen dalam satu proses server. Job broadcast dan log pesan keluar juga tersimpan di SQLite sehingga tidak hilang saat restart.
+
+Dokumentasi API: [API.md](./API.md).
 
 ## Setup
 
@@ -10,122 +14,145 @@ cp .env.example .env   # set API_KEY dan PORT
 npm run dev
 ```
 
-Saat pertama kali dijalankan, QR code muncul di terminal dan di UI demo. Scan dengan WhatsApp → *Settings* → *Linked devices*. Setelah terpasang, auth state tersimpan di `data/auth` sehingga restart tidak perlu scan lagi. Logout (via API/UI atau dari HP) otomatis menghapus `data/auth`; panggil `POST /login` untuk pairing ulang tanpa restart.
+Butuh **Node.js >= 24** karena memakai `node:sqlite` bawaan.
 
-Semua endpoint memerlukan header `x-api-key` yang cocok dengan `API_KEY` di `.env`.
+| Env                  | Default         | Keterangan                                      |
+| -------------------- | --------------- | ----------------------------------------------- |
+| `API_KEY`            | (wajib)         | Header `x-api-key` untuk `/sessions/*`, `/customers/*`, `/stats`, `/messages` |
+| `PORT`               | `3000`          | Port HTTP                                       |
+| `AUTH_DB_PATH`       | `data/auth.db`  | SQLite untuk credentials dan signal keys        |
+| `APP_DB_PATH`        | `data/app.db`   | SQLite untuk job broadcast dan `message_log`    |
+| `MAX_SESSIONS`       | `10`            | Batas jumlah sesi aktif                         |
+| `LOG_RETENTION_DAYS` | `30`            | Retensi `message_log`, dibersihkan tiap 24 jam  |
 
-## UI Demo
+- `GET /` → info service dalam JSON.
+- `GET /demo` → dashboard UI.
+- Semua endpoint `/sessions/*`, `/customers/*`, `/stats`, dan `/messages` memerlukan header `x-api-key` yang cocok dengan `API_KEY`.
 
-Buka `http://localhost:<PORT>` di browser. UI demo menyediakan: input API key (disimpan di localStorage), status koneksi, QR pairing, toggle login/logout, form kirim pesan, dan form broadcast (nomor tujuan, isi pesan, delay antar pesan). File statis ada di `public/`.
+## Database
+
+- Kedua DB dibuat otomatis saat start (folder `data/` dibuat jika belum ada) dan memakai WAL + `busy_timeout`.
+- File `*.db`, `*.db-wal`, dan `*.db-shm` gitignored. Jangan commit isinya.
+- Jalankan **satu proses server saja** per pasangan file DB; SQLite tidak cocok untuk dua instance penulis.
+- `AUTH_DB_PATH` berisi kunci privat setara kredensial login. Backup harus diperlakukan seperti rahasia.
+- Migrasi schema berjalan otomatis dan dicatat di tabel `schema_migrations`.
+
+## Konsep sesi
+
+- Sesi dibuat lewat `POST /sessions` dengan `sessionId` unik. Jumlah sesi aktif dibatasi `MAX_SESSIONS`; melebihinya menghasilkan `409`.
+- Auth state disimpan di SQLite `AUTH_DB_PATH` (tabel `credentials` dan `signal_keys`). Tidak ada lagi folder `data/auth/<sessionId>/`.
+- Saat server start, semua sesi yang punya baris `credentials` dipulihkan otomatis dengan jeda antar sesi. Sesi yang sudah terpasang langsung connect tanpa pairing ulang; sesi yang belum selesai pairing dipulihkan dalam mode QR.
+- Satu `sessionId` hanya boleh punya satu socket. Sesi yang putus akan reconnect sendiri dengan exponential backoff (2 detik sampai 60 detik + jitter) tanpa mengganggu sesi lain.
+- Logout menghapus baris auth sesi tersebut. Untuk pairing ulang, panggil `POST /sessions` dengan `sessionId` yang sama (status sesi harus `logged_out`/`disconnected`).
+- `DELETE /sessions/:id` logout jika perlu, menghapus auth, menghapus sesi dari manager, dan menandai job broadcast yang berjalan sebagai `failed`. Riwayat `message_log` dan job lama tidak dihapus.
+- Auth single-session lama di `data/auth/` **tidak** dimigrasi otomatis. Sesi lama perlu pairing ulang lewat `POST /sessions`.
+
+`sessionId` divalidasi dengan pola `^[a-zA-Z0-9_-]{1,32}$`. Nilai seperti `../`, garis miring, atau lebih dari 32 karakter ditolak `400` untuk mencegah path traversal.
+
+## Customer
+
+- Daftar nomor WhatsApp customer disimpan di tabel `customers` pada `APP_DB_PATH`: `name`, `phone` (digit-only, unik), dan `note` bebas.
+- Customer bersifat global, tidak terikat sesi. UI memakainya untuk memilih penerima broadcast dan menampilkan nama di riwayat pengiriman.
+- Broadcast bisa memakai `customerIds`; token `{nama}` pada teks diganti nama customer per penerima. Nomor manual lewat `recipients` tetap didukung untuk integrasi API.
+- CRUD tersedia di `/customers` (lihat [API.md](./API.md)).
+
+## Mode login
+
+### Pairing code
+
+```bash
+curl -X POST http://localhost:3000/sessions \
+  -H "x-api-key: <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId": "sales-1", "mode": "pairing", "phone": "6281234567890"}'
+```
+
+- `mode` default `pairing`.
+- Nomor disanitasi menjadi digit saja; wajib 8–15 digit.
+- Kode pairing diminta otomatis setelah socket siap dan hanya jika sesi belum terdaftar.
+- Ambil kode di `GET /sessions/:id/pairing`. Request kode dibatasi (cooldown 60 detik per sesi) agar tidak spam ke WhatsApp.
+
+### QR code
+
+```bash
+curl -X POST http://localhost:3000/sessions \
+  -H "x-api-key: <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId": "sales-2", "mode": "qr"}'
+```
+
+Ambil QR terbaru sebagai data-URL PNG di `GET /sessions/:id/qr`. QR diperbarui otomatis oleh Baileys.
 
 ## API
 
-### `GET /status`
+Kontrak API lengkap — request, response, status code, dan contoh — ada di **[API.md](./API.md)**.
 
-Status koneksi WhatsApp.
+| Method   | Path                                    | Keterangan              |
+| -------- | --------------------------------------- | ----------------------- |
+| `GET`    | `/`                                     | Info service (publik)   |
+| `POST`   | `/sessions`                             | Buat sesi / mulai login |
+| `GET`    | `/sessions`                             | Daftar sesi             |
+| `GET`    | `/sessions/:id/status`                  | Status satu sesi        |
+| `GET`    | `/sessions/:id/qr`                      | QR sebagai data-URL     |
+| `GET`    | `/sessions/:id/pairing`                 | Kode pairing            |
+| `POST`   | `/sessions/:id/send`                    | Kirim satu pesan        |
+| `GET`    | `/sessions/:id/messages`                | Riwayat pesan keluar per sesi |
+| `POST`   | `/sessions/:id/broadcast`               | Mulai job broadcast     |
+| `GET`    | `/sessions/:id/broadcast/:jobId`        | Status job broadcast    |
+| `POST`   | `/sessions/:id/broadcast/:jobId/cancel` | Batalkan job broadcast  |
+| `POST`   | `/sessions/:id/logout`                  | Logout dan hapus auth   |
+| `DELETE` | `/sessions/:id`                         | Hapus sesi              |
+| `GET`    | `/customers`                            | Daftar/cari customer    |
+| `POST`   | `/customers`                            | Tambah customer         |
+| `PATCH`  | `/customers/:id`                        | Ubah customer           |
+| `DELETE` | `/customers/:id`                        | Hapus customer          |
+| `GET`    | `/stats`                                | Ringkasan dashboard     |
+| `GET`    | `/messages`                             | Riwayat semua sesi      |
 
-```bash
-curl -H "x-api-key: <API_KEY>" http://localhost:3000/status
-```
+Semua endpoint di atas (kecuali `GET /`) memerlukan header `x-api-key`. Error berbentuk `{ "error": "..." }`; error validasi menambahkan `details`.
 
-```json
-{ "status": "connected", "connected": true }
-```
+## Bot ping-pong
 
-`status`: `connecting` | `connected` | `disconnected` | `logged_out`
+Pesan teks masuk `"ping"` dari chat mana pun otomatis dibalas `"pong"` pada sesi yang menerimanya. Pesan masuk tidak disimpan.
 
-### `GET /qr`
+## UI Demo
 
-QR pairing sebagai data-URL PNG untuk UI demo. Mengembalikan `{ "qr": null }` jika tidak ada QR aktif (sudah terpasang atau logged out). QR diperbarui otomatis oleh Baileys setiap kedaluwarsa.
+Buka `http://localhost:<PORT>/demo`. Dashboard menyediakan:
 
-```bash
-curl -H "x-api-key: <API_KEY>" http://localhost:3000/qr
-```
+- input API key (disimpan di localStorage),
+- kartu ringkasan: status server + ping, sesi aktif, jeda anti-ban, total pesan,
+- pengaturan jeda anti-ban dengan preset 10s / 30s / 1mnt / 2mnt atau rentang min–maks bebas (10–600 detik, acak per pesan),
+- daftar sesi dalam kartu: status, nomor, pesan hari ini, QR/pairing, tombol kirim, logout, dan hapus,
+- panel customer: cari, tambah, edit, hapus, dan pilih banyak customer,
+- komposer broadcast: pilih sesi + customer, template `{nama}`, estimasi durasi, progres, hitung mundur, dan tombol batal,
+- riwayat pengiriman terakhir gabungan semua sesi atau difilter per sesi.
 
-```json
-{ "qr": "data:image/png;base64,iVBORw0KGgo..." }
-```
+File statis ada di `public/`, disajikan khusus di `/demo`.
 
-### `POST /send`
+## Breaking changes
 
-Kirim pesan teks.
+- Endpoint lama `/status`, `/qr`, `/send`, `/login`, `/logout`, dan `/broadcast` dihapus. Gunakan endpoint `/sessions/*`.
+- UI demo pindah dari `/` ke `/demo`. `GET /` sekarang hanya info service JSON.
+- Auth pindah dari folder `data/auth/` ke SQLite `AUTH_DB_PATH` (default `data/auth.db`).
+- Job broadcast dan log pesan sekarang persisten di SQLite `APP_DB_PATH` (default `data/app.db`).
+- Runtime minimal Node.js 24 karena memakai `node:sqlite`.
+- Server tidak lagi otomatis login saat tanpa sesi; buat sesi lewat `POST /sessions`.
+- Broadcast sekarang asinkron (`202 + jobId`) dan memakai `delayMinMs`/`delayMaxMs` (minimum **10 detik**), bukan `delayMs`.
+- Broadcast menerima `customerIds` dan merender token `{nama}` per penerima. Teks per penerima disimpan di `broadcast_recipients.text`.
+- Tabel `customers` (migrasi 3) ditambahkan untuk daftar nomor customer.
+- `GET /sessions` menyertakan `sentToday`; `GET /sessions` tidak lagi hanya objek session mentah.
+- Endpoint baru: `/customers`, `/stats`, `/messages` (riwayat gabungan).
+- Broadcast tidak lagi hilang saat restart: job `running` dilanjutkan, penerima `sending` menjadi `failed (interrupted)`.
+- QR tidak lagi dicetak ke terminal. QR tersedia lewat API/UI sebagai data-URL.
+- Dependency `qrcode-terminal` dihapus.
 
-```bash
-curl -X POST http://localhost:3000/send \
-  -H "x-api-key: <API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{"to": "6281234567890", "text": "hello"}'
-```
+## Di luar scope
 
-| Field | Tipe   | Keterangan                                                             |
-| ----- | ------ | ---------------------------------------------------------------------- |
-| `to`  | string | Nomor tujuan (format `62xxx`, otomatis diberi akhiran `@s.whatsapp.net`) atau JID lengkap |
-| `text`| string | Isi pesan, minimal 1 karakter                                          |
+Saran pengembangan berikut tidak dikerjakan di versi ini:
 
-Sukses:
-
-```json
-{ "ok": true, "id": "3EB0B430B6F8BEH20C7FAD25" }
-```
-
-Error:
-
-| Kode | Penyebab                                    |
-| ---- | ------------------------------------------- |
-| 400  | Body bukan JSON valid atau gagal validasi   |
-| 401  | Header `x-api-key` hilang / salah           |
-| 503  | WhatsApp belum terhubung                    |
-| 502  | Gagal mengirim (mis. nomor tidak terdaftar) |
-
-### `POST /login`
-
-Mulai pairing (buat socket baru + tampilkan QR). Gagal 409 jika sudah `connected`/`connecting`. Dipanggil otomatis saat server start.
-
-```bash
-curl -X POST -H "x-api-key: <API_KEY>" http://localhost:3000/login
-```
-
-```json
-{ "ok": true, "status": "connecting" }
-```
-
-### `POST /logout`
-
-Logout dari WhatsApp dan hapus `data/auth`. Untuk pairing ulang, panggil `POST /login` (atau tombol *Mulai Pairing* di UI).
-
-```bash
-curl -X POST -H "x-api-key: <API_KEY>" http://localhost:3000/logout
-```
-
-```json
-{ "ok": true, "status": "logged_out" }
-```
-
-### `POST /broadcast`
-
-Kirim pesan yang sama ke banyak nomor, satu per satu dengan delay antar pesan untuk meniru perilaku manusia.
-
-```bash
-curl -X POST http://localhost:3000/broadcast \
-  -H "x-api-key: <API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{"recipients": ["6281234567890", "6289876543210"], "text": "promo hari ini", "delayMs": 3000}'
-```
-
-| Field        | Tipe     | Keterangan                                        |
-| ------------ | -------- | ------------------------------------------------- |
-| `recipients` | string[] | 1–100 nomor/JID                                   |
-| `text`       | string   | Isi pesan                                         |
-| `delayMs`    | number   | Jeda antar kirim, default 3000, min 1000, max 600000 |
-
-Sukses:
-
-```json
-{ "ok": true, "sent": 2, "failed": 0, "disconnected": false, "results": [{ "to": "6281234567890", "ok": true }] }
-```
-
-Request berjalan lama (total ≈ `delayMs × (jumlah penerima − 1)`); respons dikembalikan setelah semua selesai dengan rekap per nomor. Delay terlalu pendek berisiko diblokir WhatsApp.
-
-### Bot ping-pong
-
-Pesan teks masuk `"ping"` dari chat mana pun otomatis dibalas `"pong"`.
+- Purge otomatis riwayat job broadcast lama (`message_log` sudah dipurge sesuai retensi).
+- Penyimpanan isi atau metadata pesan masuk.
+- Migrasi otomatis auth folder lama `data/auth/`.
+- Auth per-user / multi-tenant.
+- Sharding multi-instance (satu sesi hanya boleh dipegang satu proses).
+- Webhook untuk status pengiriman atau pesan masuk.

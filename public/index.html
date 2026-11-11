@@ -4,63 +4,301 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>WA Bot Service</title>
-    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/demo/style.css" />
   </head>
   <body>
-    <main class="card">
-      <header class="header">
-        <h1>WA Bot <span class="muted">Service</span></h1>
-        <span id="status" class="pill">–</span>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">wa</span>
+          <div>
+            <h1>WA Bot <span>Service</span></h1>
+            <p class="hint" id="serviceMeta">Menghubungkan…</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <div class="key-field">
+            <label class="sr-only" for="apiKey">API Key</label>
+            <input
+              id="apiKey"
+              type="password"
+              placeholder="API key"
+              autocomplete="off"
+            />
+            <button id="saveKey" class="btn ghost small" type="button">
+              Simpan
+            </button>
+          </div>
+          <button id="addSessionBtn" class="btn primary" type="button">
+            + Tambah Nomor
+          </button>
+        </div>
       </header>
 
-      <section>
-        <h2>API Key</h2>
-        <div class="row">
-          <input id="apiKey" type="password" placeholder="nilai API_KEY dari .env" />
-          <button id="saveKey">Simpan</button>
-        </div>
-        <p class="hint">Disimpan di localStorage browser ini.</p>
+      <section class="stats-grid" aria-label="Ringkasan service">
+        <article class="stat-card">
+          <div class="stat-head">
+            <span>Status Server</span>
+            <span class="icon" aria-hidden="true">◉</span>
+          </div>
+          <strong id="statServer">–</strong>
+          <p class="hint" id="statServerHint">Mengecek…</p>
+        </article>
+        <article class="stat-card">
+          <div class="stat-head">
+            <span>Sesi Nomor Aktif</span>
+            <span class="icon" aria-hidden="true">▣</span>
+          </div>
+          <strong id="statSessions">–</strong>
+          <p class="hint" id="statSessionsHint">–</p>
+        </article>
+        <article class="stat-card">
+          <div class="stat-head">
+            <span>Jeda Anti-Ban</span>
+            <span class="icon" aria-hidden="true">⏱</span>
+          </div>
+          <strong id="statDelay">–</strong>
+          <p class="hint" id="statDelayHint">Acak per pesan</p>
+        </article>
+        <article class="stat-card">
+          <div class="stat-head">
+            <span>Pesan Terkirim</span>
+            <span class="icon" aria-hidden="true">➤</span>
+          </div>
+          <strong id="statMessages">–</strong>
+          <p class="hint" id="statMessagesHint">–</p>
+        </article>
       </section>
 
-      <section>
-        <h2>Pairing</h2>
-        <div class="qr-wrap hidden" id="qrWrap">
-          <img id="qrImage" class="qr" alt="QR Code WhatsApp" width="256" height="256" />
-          <p class="hint">WhatsApp → Perangkat tertaut → Tautkan perangkat. QR diperbarui otomatis.</p>
+      <section class="panel anti-ban" aria-labelledby="antiBanTitle">
+        <div class="anti-ban-main">
+          <div class="anti-ban-title">
+            <span class="lock" aria-hidden="true">🛡</span>
+            <h2 id="antiBanTitle">Pengaturan Delay Anti-Ban WhatsApp</h2>
+            <span class="badge ok">Proteksi Aktif</span>
+          </div>
+          <p class="hint">
+            Jeda acak antar pesan broadcast. Setiap pesan memakai jeda berbeda
+            di dalam rentang yang dipilih.
+          </p>
+
+          <div class="field-label">Pilih preset jeda</div>
+          <div class="preset-row" role="group" aria-label="Preset jeda">
+            <button class="preset" type="button" data-min="10" data-max="20">
+              10s
+            </button>
+            <button class="preset" type="button" data-min="30" data-max="45">
+              30s
+            </button>
+            <button class="preset" type="button" data-min="60" data-max="90">
+              1mnt
+            </button>
+            <button class="preset" type="button" data-min="120" data-max="180">
+              2mnt
+            </button>
+          </div>
+
+          <div class="delay-custom">
+            <label>
+              Min (detik)
+              <input id="delayMin" type="number" min="10" max="600" step="1" />
+            </label>
+            <label>
+              Maks (detik)
+              <input id="delayMax" type="number" min="10" max="600" step="1" />
+            </label>
+            <p class="hint" id="delayHint">Rentang jeda 30–45 detik.</p>
+          </div>
         </div>
-        <div class="row">
-          <button id="loginBtn" class="hidden">Mulai Pairing</button>
-          <button id="logoutBtn" class="danger hidden">Logout</button>
-        </div>
+        <aside class="anti-ban-note">
+          <strong>Jitter per pesan</strong>
+          <p class="hint">
+            Jeda diundi ulang untuk tiap penerima, jadi pengiriman tidak
+            berjalan konstan. Minimal 10 detik, maksimal 600 detik.
+          </p>
+        </aside>
       </section>
 
-      <section>
-        <h2>Kirim Pesan</h2>
-        <form id="sendForm">
-          <label for="to">Nomor / JID</label>
-          <input id="to" placeholder="6281234567890" required />
-          <label for="text">Pesan</label>
-          <input id="text" placeholder="hello" required />
-          <button type="submit" id="sendBtn">Kirim</button>
-        </form>
-        <pre id="sendResult" class="result hidden"></pre>
+      <section class="section-block" aria-labelledby="sessionTitle">
+        <div class="section-head">
+          <div>
+            <h2 id="sessionTitle">Daftar Multi-Session Nomor Sales</h2>
+            <p class="hint">
+              Kelola koneksi multi-nomor WhatsApp — QR, pairing, logout, dan
+              hapus sesi.
+            </p>
+          </div>
+          <button id="addSessionBtn2" class="btn primary" type="button">
+            + Tambah Nomor Sales
+          </button>
+        </div>
+        <div id="sessionList" class="session-grid"></div>
       </section>
 
-      <section>
-        <h2>Broadcast</h2>
-        <form id="broadcastForm">
-          <label for="recipients">Nomor tujuan (satu per baris)</label>
-          <textarea id="recipients" rows="3" placeholder="6281234567890&#10;6289876543210" required></textarea>
-          <label for="broadcastText">Isi pesan</label>
-          <textarea id="broadcastText" rows="2" placeholder="Isi pesan broadcast" required></textarea>
-          <label for="delayMs">Delay antar pesan (ms)</label>
-          <input id="delayMs" type="number" min="1000" max="600000" step="500" value="3000" required />
-          <button type="submit" id="broadcastBtn">Kirim Broadcast</button>
-          <p class="hint">Delay terlalu pendek berisiko diblokir WhatsApp. Minimal 1000ms.</p>
-        </form>
-        <pre id="broadcastResult" class="result hidden"></pre>
-      </section>
-    </main>
-    <script src="/app.js"></script>
+      <div class="columns">
+        <section class="panel customers-panel" aria-labelledby="customerTitle">
+          <div class="panel-head">
+            <div>
+              <h2 id="customerTitle">Daftar Customer</h2>
+              <p class="hint" id="customerCount">Memuat…</p>
+            </div>
+            <button id="addCustomerBtn" class="btn primary small" type="button">
+              + Tambah Customer
+            </button>
+          </div>
+          <div class="search-row">
+            <label class="sr-only" for="customerSearch">Cari customer</label>
+            <input
+              id="customerSearch"
+              type="search"
+              placeholder="Cari nama atau nomor customer…"
+            />
+          </div>
+          <div id="customerList" class="customer-list"></div>
+          <button id="loadMoreCustomers" class="btn ghost small hidden" type="button">
+            Muat lebih banyak
+          </button>
+        </section>
+
+        <section class="panel composer" aria-labelledby="composerTitle">
+          <div class="panel-head">
+            <div>
+              <h2 id="composerTitle">Kirim Pesan WhatsApp</h2>
+              <p class="hint">
+                Pilih customer, lalu kirim dengan delay acak sesuai preset.
+              </p>
+            </div>
+          </div>
+
+          <form id="broadcastForm" autocomplete="off">
+            <div class="row two">
+              <label>
+                Sesi pengirim
+                <select id="broadcastSession"></select>
+              </label>
+              <label>
+                Customer terpilih
+                <span id="selectedCount" class="selected-count">0 customer</span>
+              </label>
+            </div>
+            <div id="selectedChips" class="selected-chips"></div>
+
+            <label for="broadcastText">Isi pesan</label>
+            <textarea
+              id="broadcastText"
+              rows="4"
+              maxlength="4000"
+              placeholder="Halo {nama}, ada promo khusus hari ini…"
+            ></textarea>
+            <p class="hint">
+              Gunakan <code>{nama}</code> agar otomatis diganti nama customer.
+            </p>
+
+            <div class="composer-meta">
+              <span id="composerEstimate" class="hint">Pilih customer dulu.</span>
+              <span id="composerDelay" class="hint"></span>
+            </div>
+
+            <p id="broadcastError" class="error-text hidden" role="alert"></p>
+            <button id="broadcastBtn" class="btn primary wide" type="submit" disabled>
+              Kirim Sekarang
+            </button>
+          </form>
+
+          <div id="broadcastProgress" class="job-card hidden" aria-live="polite">
+            <div class="job-head">
+              <strong id="jobStatus">–</strong>
+              <button id="cancelBroadcastBtn" class="btn danger small hidden" type="button">
+                Batal
+              </button>
+            </div>
+            <p id="jobCounts" class="hint"></p>
+            <p id="jobCountdown" class="hint"></p>
+            <div class="bar"><span id="jobBar"></span></div>
+            <ul id="jobResults" class="job-results"></ul>
+          </div>
+
+          <div class="history">
+            <div class="history-head">
+              <h3>Riwayat pengiriman terakhir</h3>
+              <select id="historyFilter" aria-label="Filter riwayat per sesi">
+                <option value="">Semua sesi</option>
+              </select>
+            </div>
+            <ul id="historyList" class="history-list"></ul>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <dialog id="sessionDialog" class="modal">
+      <form id="sessionForm" method="dialog">
+        <div class="modal-head">
+          <h2>Tambah Nomor Sales</h2>
+          <button type="button" class="icon-btn" data-close aria-label="Tutup">
+            ×
+          </button>
+        </div>
+        <label for="sessionId">Session ID</label>
+        <input
+          id="sessionId"
+          placeholder="sales-1"
+          pattern="[A-Za-z0-9_\-]{1,32}"
+          maxlength="32"
+          required
+        />
+        <label for="sessionMode">Mode login</label>
+        <select id="sessionMode">
+          <option value="pairing">Pairing code</option>
+          <option value="qr">QR code</option>
+        </select>
+        <div id="phoneField">
+          <label for="sessionPhone">Nomor WhatsApp (pairing)</label>
+          <input id="sessionPhone" placeholder="6281234567890" inputmode="numeric" />
+        </div>
+        <p class="hint">
+          Session ID hanya huruf, angka, <code>_</code>, <code>-</code>; maks 32
+          karakter.
+        </p>
+        <p id="sessionError" class="error-text hidden" role="alert"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close>Batal</button>
+          <button type="submit" id="createSessionBtn" class="btn primary">
+            Tambah Sesi
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="customerDialog" class="modal">
+      <form id="customerForm" method="dialog">
+        <div class="modal-head">
+          <h2 id="customerDialogTitle">Tambah Customer</h2>
+          <button type="button" class="icon-btn" data-close aria-label="Tutup">
+            ×
+          </button>
+        </div>
+        <label for="customerName">Nama customer</label>
+        <input id="customerName" maxlength="100" required />
+        <label for="customerPhone">Nomor WhatsApp</label>
+        <input
+          id="customerPhone"
+          placeholder="6281234567890"
+          inputmode="numeric"
+          required
+        />
+        <label for="customerNote">Catatan (opsional)</label>
+        <textarea id="customerNote" rows="2" maxlength="500"></textarea>
+        <p id="customerError" class="error-text hidden" role="alert"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close>Batal</button>
+          <button type="submit" id="saveCustomerBtn" class="btn primary">
+            Simpan
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/demo/app.js"></script>
   </body>
 </html>

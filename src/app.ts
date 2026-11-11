@@ -1,11 +1,13 @@
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono, type MiddlewareHandler } from 'hono'
 import broadcastRoutes from './routes/broadcast.js'
-import loginRoutes from './routes/login.js'
-import logoutRoutes from './routes/logout.js'
-import qrRoutes from './routes/qr.js'
+import customersRoutes from './routes/customers.js'
+import historyRoutes from './routes/history.js'
+import messagesRoutes from './routes/messages.js'
 import sendRoutes from './routes/send.js'
-import statusRoutes from './routes/status.js'
+import serviceRoutes from './routes/service.js'
+import sessionsRoutes from './routes/sessions.js'
+import statsRoutes from './routes/stats.js'
 
 const apiKeyAuth: MiddlewareHandler = async (c, next) => {
   const key = c.req.header('x-api-key')
@@ -18,18 +20,30 @@ const apiKeyAuth: MiddlewareHandler = async (c, next) => {
 
 const app = new Hono()
 
-app.use('/send', apiKeyAuth)
-app.use('/status', apiKeyAuth)
-app.use('/qr', apiKeyAuth)
-app.use('/login', apiKeyAuth)
-app.use('/logout', apiKeyAuth)
-app.use('/broadcast', apiKeyAuth)
-app.route('/send', sendRoutes)
-app.route('/status', statusRoutes)
-app.route('/qr', qrRoutes)
-app.route('/login', loginRoutes)
-app.route('/logout', logoutRoutes)
-app.route('/broadcast', broadcastRoutes)
-app.use('*', serveStatic({ root: './public' }))
+app.route('/', serviceRoutes)
+
+app.use('/sessions', apiKeyAuth)
+app.use('/sessions/*', apiKeyAuth)
+app.route('/sessions', sessionsRoutes)
+app.route('/sessions', sendRoutes)
+app.route('/sessions', broadcastRoutes)
+app.route('/sessions', messagesRoutes)
+
+app.use('/customers', apiKeyAuth)
+app.use('/customers/*', apiKeyAuth)
+app.route('/customers', customersRoutes)
+
+app.use('/stats', apiKeyAuth)
+app.route('/stats', statsRoutes)
+
+app.use('/messages', apiKeyAuth)
+app.route('/messages', historyRoutes)
+
+const demoStatic = serveStatic({
+  root: './public',
+  rewriteRequestPath: (path) => path.replace(/^\/demo/, '') || '/',
+})
+app.use('/demo', demoStatic)
+app.use('/demo/*', demoStatic)
 
 export default app

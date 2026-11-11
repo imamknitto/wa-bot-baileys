@@ -1,6 +1,22 @@
 import { serve } from '@hono/node-server'
 import app from './app.js'
-import { startWhatsApp } from './wa/socket.js'
+import * as scheduler from './broadcast/scheduler.js'
+import { getConfig, type Config } from './config.js'
+import { initAppDb } from './db/app.js'
+import { initAuthDb } from './db/auth.js'
+import { restoreSessions } from './wa/manager.js'
+
+function loadConfigOrExit(): Config {
+  try {
+    return getConfig()
+  } catch (err) {
+    console.error(
+      'Invalid configuration:',
+      err instanceof Error ? err.message : err,
+    )
+    process.exit(1)
+  }
+}
 
 try {
   process.loadEnvFile()
@@ -14,19 +30,26 @@ if (!apiKey) {
   process.exit(1)
 }
 
-const port = Number(process.env.PORT ?? 3000)
+const config = loadConfigOrExit()
+
+initAuthDb(config.authDbPath)
+initAppDb(config.appDbPath)
+scheduler.initialize()
 
 serve(
   {
     fetch: app.fetch,
-    port,
+    port: config.port,
   },
   (info) => {
     console.log(`Server is running on http://localhost:${info.port}`)
+    console.log(`Demo UI: http://localhost:${info.port}/demo`)
   },
 )
 
-startWhatsApp().catch((err) => {
-  console.error('Failed to start WhatsApp socket:', err)
-  process.exit(1)
-})
+restoreSessions()
+  .then(() => scheduler.start())
+  .catch((err) => {
+    console.error('Failed to restore WhatsApp sessions:', err)
+    scheduler.start()
+  })
