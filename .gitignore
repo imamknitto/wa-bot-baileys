@@ -16,6 +16,9 @@ dist/
 
 # whatsapp auth state
 data/
+*.db
+*.db-wal
+*.db-shm
 
 # env
 .env
@@ -32,3 +35,4 @@ lerna-debug.log*
 
 # misc
 .DS_Store
+docs/
