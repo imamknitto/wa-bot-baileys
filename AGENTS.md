@@ -1,6 +1,6 @@
 # AGENTS.md
 
-A [Hono](https://hono.dev) app running on Node.js. The Hono app is `src/app.ts` (default export); `src/index.ts` serves it with `@hono/node-server` on port 3000.
+A [Hono](https://hono.dev) app running on Node.js. The Hono app is `src/app.ts` (default export); `src/index.ts` serves it with `@hono/node-server` on `PORT` (default 8365).
 
 ## Run
 
@@ -31,8 +31,8 @@ Fetch https://hono.dev/llms.txt to find the page, then fetch it with the `Accept
 - Customers are global contacts in the app DB (`customers` table, migration 3). Queries live in `src/db/app.ts`, routes in `src/routes/customers.ts`. Contacts are never tied to a session.
 - Dashboard aggregates come from `GET /stats`; recent outgoing messages across sessions come from `GET /messages` (`src/routes/history.ts`), which joins `customers` by phone for display names.
 - Broadcast is at-most-once: write recipient status `sending` before calling `sendText`, then `sent`/`failed`. Never auto-retry `sending` rows on restart; they become `failed` with error `interrupted`.
-- `src/db/sqlite.ts` opens both DBs (WAL, `busy_timeout`, `foreign_keys`) and runs migrations. Auth DB and app DB are separate files (`AUTH_DB_PATH`, `APP_DB_PATH`). Single process only.
-- `.env` (API_KEY, PORT, AUTH_DB_PATH, APP_DB_PATH, MAX_SESSIONS, LOG_RETENTION_DAYS) must never be committed; `.env.example` is the template.
+- `src/db/sqlite.ts` opens the SQLite DB (WAL, `busy_timeout`, `foreign_keys`) and runs migrations. Auth state and app data live in one file (`DB_PATH`). Single process only.
+- `.env` (API_KEY, PORT, DB_PATH, MAX_SESSIONS, LOG_RETENTION_DAYS) must never be committed; `.env.example` is the template.
 - All `/sessions/*`, `/customers/*`, `/stats`, and `/messages` endpoints require the `x-api-key` header matching `API_KEY`. `GET /` is public service info and `GET /demo` serves the static dashboard.
 - Request bodies are validated with Zod schemas shared from `src/validation.ts`.
 - Outgoing messages are logged to `message_log` (`src/db/app.ts`) and exposed via `GET /sessions/:id/messages`. Incoming message content is never stored.

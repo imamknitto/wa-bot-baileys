@@ -3,7 +3,6 @@ import app from './app.js'
 import * as scheduler from './broadcast/scheduler.js'
 import { getConfig, type Config } from './config.js'
 import { initAppDb } from './db/app.js'
-import { initAuthDb } from './db/auth.js'
 import { restoreSessions } from './wa/manager.js'
 
 function loadConfigOrExit(): Config {
@@ -32,8 +31,7 @@ if (!apiKey) {
 
 const config = loadConfigOrExit()
 
-initAuthDb(config.authDbPath)
-initAppDb(config.appDbPath)
+initAppDb(config.dbPath)
 scheduler.initialize()
 
 serve(

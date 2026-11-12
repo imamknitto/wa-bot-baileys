@@ -150,6 +150,25 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE broadcast_recipients ADD COLUMN text TEXT;
     `,
   },
+  {
+    version: 4,
+    sql: `
+      CREATE TABLE IF NOT EXISTS credentials (
+        session_id TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS signal_keys (
+        session_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        id TEXT NOT NULL,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, type, id)
+      );
+    `,
+  },
 ];
 
 let db: Db | null = null;

@@ -2,7 +2,7 @@
 
 Kontrak HTTP API untuk `wa-bot-service`. Dokumen ini adalah acuan request/response; untuk setup, arsitektur, dan konsep sesi lihat [README.md](./README.md).
 
-- Base URL: `http://localhost:<PORT>` (default `http://localhost:3000`)
+- Base URL: `http://localhost:<PORT>` (default `http://localhost:8365`)
 - Format: JSON (`Content-Type: application/json` untuk request ber-body)
 - Auth: header `x-api-key` wajib untuk `/sessions/*`, `/customers/*`, `/stats`, dan `/messages`; `GET /` publik
 - Semua timestamp memakai epoch milliseconds

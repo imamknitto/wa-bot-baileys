@@ -19,9 +19,8 @@ Butuh **Node.js >= 24** karena memakai `node:sqlite` bawaan.
 | Env                  | Default         | Keterangan                                      |
 | -------------------- | --------------- | ----------------------------------------------- |
 | `API_KEY`            | (wajib)         | Header `x-api-key` untuk `/sessions/*`, `/customers/*`, `/stats`, `/messages` |
-| `PORT`               | `3000`          | Port HTTP                                       |
-| `AUTH_DB_PATH`       | `data/auth.db`  | SQLite untuk credentials dan signal keys        |
-| `APP_DB_PATH`        | `data/app.db`   | SQLite untuk job broadcast dan `message_log`    |
+| `PORT`               | `8365`          | Port HTTP                                       |
+| `DB_PATH`            | `data/app.db`   | SQLite untuk auth, customer, job broadcast, dan `message_log` |
 | `MAX_SESSIONS`       | `10`            | Batas jumlah sesi aktif                         |
 | `LOG_RETENTION_DAYS` | `30`            | Retensi `message_log`, dibersihkan tiap 24 jam  |
 
@@ -31,16 +30,42 @@ Butuh **Node.js >= 24** karena memakai `node:sqlite` bawaan.
 
 ## Database
 
-- Kedua DB dibuat otomatis saat start (folder `data/` dibuat jika belum ada) dan memakai WAL + `busy_timeout`.
+- DB dibuat otomatis saat start (folder `data/` dibuat jika belum ada) dan memakai WAL + `busy_timeout`.
 - File `*.db`, `*.db-wal`, dan `*.db-shm` gitignored. Jangan commit isinya.
-- Jalankan **satu proses server saja** per pasangan file DB; SQLite tidak cocok untuk dua instance penulis.
-- `AUTH_DB_PATH` berisi kunci privat setara kredensial login. Backup harus diperlakukan seperti rahasia.
+- Jalankan **satu proses server saja** per file DB; SQLite tidak cocok untuk dua instance penulis.
+- `DB_PATH` berisi kunci privat setara kredensial login (tabel `credentials`, `signal_keys`). Backup harus diperlakukan seperti rahasia.
 - Migrasi schema berjalan otomatis dan dicatat di tabel `schema_migrations`.
+
+## Alur sistem
+
+Urutan start di `src/index.ts`:
+
+```
+loadEnvFile → getConfig → initAppDb (buka DB + migrasi) → scheduler.initialize
+           → serve(:PORT) → restoreSessions → scheduler.start
+```
+
+Lapisan kode — route tipis, semua akses socket lewat satu modul:
+
+- `src/app.ts` merangkai route + `x-api-key`. Route tidak pernah membuat socket.
+- `src/wa/manager.ts` pemilik socket: `startSession`, `sendText`, `logoutSession`, `deleteSession`, `restoreSessions`.
+- `src/db/auth.ts` menyimpan state Baileys (`credentials`, `signal_keys`) memakai koneksi DB yang sama dengan data aplikasi (`src/db/app.ts`).
+- `src/broadcast/store.ts` query + recovery job; `src/broadcast/scheduler.ts` tick 1 detik mengambil penerima yang jatuh tempo.
+
+| Operasi | Jalur | Yang ditulis |
+| --- | --- | --- |
+| Pairing / sesi baru | `POST /sessions` → `startSession` → ambil QR atau kode lewat `GET /sessions/:id/qr` / `.../pairing` | `credentials`, `signal_keys` |
+| Kirim pesan | `POST /sessions/:id/send` → `sendText` | `message_log` |
+| Broadcast | `POST /sessions/:id/broadcast` → `createJob` (render `{nama}`, dedupe JID) → scheduler → `sendText` | `broadcast_jobs`, `broadcast_recipients`, `message_log` |
+| Restart | `restoreSessions()` membaca `credentials` → connect ulang atau QR; sisa status `sending` jadi `failed` (`interrupted`) | `broadcast_recipients` |
+| Dashboard | `GET /sessions`, `GET /stats`, `GET /messages` | baca saja |
+
+Pesan masuk tidak disimpan; hanya pesan keluar yang masuk `message_log`.
 
 ## Konsep sesi
 
 - Sesi dibuat lewat `POST /sessions` dengan `sessionId` unik. Jumlah sesi aktif dibatasi `MAX_SESSIONS`; melebihinya menghasilkan `409`.
-- Auth state disimpan di SQLite `AUTH_DB_PATH` (tabel `credentials` dan `signal_keys`). Tidak ada lagi folder `data/auth/<sessionId>/`.
+- Auth state disimpan di tabel `credentials` dan `signal_keys` pada `DB_PATH`. Tidak ada lagi folder `data/auth/<sessionId>/`.
 - Saat server start, semua sesi yang punya baris `credentials` dipulihkan otomatis dengan jeda antar sesi. Sesi yang sudah terpasang langsung connect tanpa pairing ulang; sesi yang belum selesai pairing dipulihkan dalam mode QR.
 - Satu `sessionId` hanya boleh punya satu socket. Sesi yang putus akan reconnect sendiri dengan exponential backoff (2 detik sampai 60 detik + jitter) tanpa mengganggu sesi lain.
 - Logout menghapus baris auth sesi tersebut. Untuk pairing ulang, panggil `POST /sessions` dengan `sessionId` yang sama (status sesi harus `logged_out`/`disconnected`).
@@ -51,7 +76,7 @@ Butuh **Node.js >= 24** karena memakai `node:sqlite` bawaan.
 
 ## Customer
 
-- Daftar nomor WhatsApp customer disimpan di tabel `customers` pada `APP_DB_PATH`: `name`, `phone` (digit-only, unik), dan `note` bebas.
+- Daftar nomor WhatsApp customer disimpan di tabel `customers` pada `DB_PATH`: `name`, `phone` (digit-only, unik), dan `note` bebas.
 - Customer bersifat global, tidak terikat sesi. UI memakainya untuk memilih penerima broadcast dan menampilkan nama di riwayat pengiriman.
 - Broadcast bisa memakai `customerIds`; token `{nama}` pada teks diganti nama customer per penerima. Nomor manual lewat `recipients` tetap didukung untuk integrasi API.
 - CRUD tersedia di `/customers` (lihat [API.md](./API.md)).
@@ -61,7 +86,7 @@ Butuh **Node.js >= 24** karena memakai `node:sqlite` bawaan.
 ### Pairing code
 
 ```bash
-curl -X POST http://localhost:3000/sessions \
+curl -X POST http://localhost:8365/sessions \
   -H "x-api-key: <API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"sessionId": "sales-1", "mode": "pairing", "phone": "6281234567890"}'
@@ -75,7 +100,7 @@ curl -X POST http://localhost:3000/sessions \
 ### QR code
 
 ```bash
-curl -X POST http://localhost:3000/sessions \
+curl -X POST http://localhost:8365/sessions \
   -H "x-api-key: <API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"sessionId": "sales-2", "mode": "qr"}'
@@ -122,10 +147,10 @@ Buka `http://localhost:<PORT>/demo`. Dashboard menyediakan:
 - input API key (disimpan di localStorage),
 - kartu ringkasan: status server + ping, sesi aktif, jeda anti-ban, total pesan,
 - pengaturan jeda anti-ban dengan preset 10s / 30s / 1mnt / 2mnt atau rentang min–maks bebas (10–600 detik, acak per pesan),
-- daftar sesi dalam kartu: status, nomor, pesan hari ini, QR/pairing, tombol kirim, logout, dan hapus,
-- panel customer: cari, tambah, edit, hapus, dan pilih banyak customer,
-- komposer broadcast: pilih sesi + customer, template `{nama}`, estimasi durasi, progres, hitung mundur, dan tombol batal,
-- riwayat pengiriman terakhir gabungan semua sesi atau difilter per sesi.
+- daftar sesi dalam kartu: status, nomor, pesan hari ini, QR/pairing, badge broadcast berjalan, tombol logout, dan hapus,
+- panel customer (dashboard): cari, tambah, edit, hapus — daftar customer global,
+- riwayat pengiriman gabungan semua sesi (dashboard) dengan filter per sesi,
+- halaman per sesi di `#/session/<sessionId>` (hash routing, dari tombol "Kirim Pesan" di kartu sesi): header status, picker penerima dari daftar customer global (pilihan teringat per sesi), komposer broadcast dengan template `{nama}`, estimasi durasi, progres, hitung mundur, tombol batal, dan riwayat sesi tersebut.
 
 File statis ada di `public/`, disajikan khusus di `/demo`.
 
@@ -133,8 +158,7 @@ File statis ada di `public/`, disajikan khusus di `/demo`.
 
 - Endpoint lama `/status`, `/qr`, `/send`, `/login`, `/logout`, dan `/broadcast` dihapus. Gunakan endpoint `/sessions/*`.
 - UI demo pindah dari `/` ke `/demo`. `GET /` sekarang hanya info service JSON.
-- Auth pindah dari folder `data/auth/` ke SQLite `AUTH_DB_PATH` (default `data/auth.db`).
-- Job broadcast dan log pesan sekarang persisten di SQLite `APP_DB_PATH` (default `data/app.db`).
+- Auth pindah dari folder `data/auth/` ke SQLite, sekarang satu file `DB_PATH` (default `data/app.db`) bersama tabel customer, broadcast, dan log pesan. `AUTH_DB_PATH`/`APP_DB_PATH` dihapus; sesi lama perlu pairing ulang.
 - Runtime minimal Node.js 24 karena memakai `node:sqlite`.
 - Server tidak lagi otomatis login saat tanpa sesi; buat sesi lewat `POST /sessions`.
 - Broadcast sekarang asinkron (`202 + jobId`) dan memakai `delayMinMs`/`delayMaxMs` (minimum **10 detik**), bukan `delayMs`.

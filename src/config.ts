@@ -1,7 +1,6 @@
 export interface Config {
   port: number;
-  authDbPath: string;
-  appDbPath: string;
+  dbPath: string;
   maxSessions: number;
   logRetentionDays: number;
 }
@@ -29,9 +28,8 @@ function pathEnv(name: string, fallback: string): string {
 export function getConfig(): Config {
   if (cached) return cached;
   cached = {
-    port: intEnv("PORT", 3000, 1, 65535),
-    authDbPath: pathEnv("AUTH_DB_PATH", "data/auth.db"),
-    appDbPath: pathEnv("APP_DB_PATH", "data/app.db"),
+    port: intEnv("PORT", 8365, 1, 65535),
+    dbPath: pathEnv("DB_PATH", "data/app.db"),
     maxSessions: intEnv("MAX_SESSIONS", 10, 1, 1000),
     logRetentionDays: intEnv("LOG_RETENTION_DAYS", 30, 1, 3650),
   };

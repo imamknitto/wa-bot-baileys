@@ -1,49 +1,10 @@
 import type { AuthenticationCreds, SignalDataSet } from "@whiskeysockets/baileys";
 import { BufferJSON } from "@whiskeysockets/baileys";
-import {
-  openDb,
-  migrate,
-  transaction,
-  type Db,
-  type Migration,
-} from "./sqlite.js";
-
-const MIGRATIONS: Migration[] = [
-  {
-    version: 1,
-    sql: `
-      CREATE TABLE IF NOT EXISTS credentials (
-        session_id TEXT PRIMARY KEY,
-        data TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS signal_keys (
-        session_id TEXT NOT NULL,
-        type TEXT NOT NULL,
-        id TEXT NOT NULL,
-        value TEXT NOT NULL,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (session_id, type, id)
-      );
-    `,
-  },
-];
-
-let db: Db | null = null;
-
-function getDb(): Db {
-  if (!db) throw new Error("Auth database is not initialized");
-  return db;
-}
-
-export function initAuthDb(path: string): void {
-  db = openDb(path);
-  migrate(db, MIGRATIONS);
-}
+import { transaction } from "./sqlite.js";
+import { getAppDb } from "./app.js";
 
 export function loadCredentials(sessionId: string): AuthenticationCreds | null {
-  const row = getDb()
+  const row = getAppDb()
     .prepare("SELECT data FROM credentials WHERE session_id = ?")
     .get(sessionId);
   if (!row) return null;
@@ -54,7 +15,7 @@ export function saveCredentials(
   sessionId: string,
   creds: AuthenticationCreds,
 ): void {
-  getDb()
+  getAppDb()
     .prepare(
       `INSERT INTO credentials (session_id, data, updated_at)
        VALUES (?, ?, ?)
@@ -76,7 +37,7 @@ export function loadSignalKeys(
 ): Record<string, unknown> {
   if (ids.length === 0) return {};
   const placeholders = ids.map(() => "?").join(", ");
-  const rows = getDb()
+  const rows = getAppDb()
     .prepare(
       `SELECT id, value FROM signal_keys
        WHERE session_id = ? AND type = ? AND id IN (${placeholders})`,
@@ -103,15 +64,15 @@ export function saveSignalKeys(
   >;
   const now = Date.now();
 
-  transaction(getDb(), () => {
-    const upsert = getDb().prepare(
+  transaction(getAppDb(), () => {
+    const upsert = getAppDb().prepare(
       `INSERT INTO signal_keys (session_id, type, id, value, updated_at)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(session_id, type, id) DO UPDATE SET
          value = excluded.value,
          updated_at = excluded.updated_at`,
     );
-    const remove = getDb().prepare(
+    const remove = getAppDb().prepare(
       "DELETE FROM signal_keys WHERE session_id = ? AND type = ? AND id = ?",
     );
 
@@ -137,30 +98,26 @@ export function saveSignalKeys(
 }
 
 export function clearSignalKeys(sessionId: string): void {
-  getDb()
+  getAppDb()
     .prepare("DELETE FROM signal_keys WHERE session_id = ?")
     .run(sessionId);
 }
 
 export function deleteAuthStateRows(sessionId: string): void {
-  transaction(getDb(), () => {
-    getDb()
+  transaction(getAppDb(), () => {
+    getAppDb()
       .prepare("DELETE FROM signal_keys WHERE session_id = ?")
       .run(sessionId);
-    getDb()
+    getAppDb()
       .prepare("DELETE FROM credentials WHERE session_id = ?")
       .run(sessionId);
   });
 }
 
 export function listCredentialSessionIds(): string[] {
-  return getDb()
+  return getAppDb()
     .prepare("SELECT session_id FROM credentials ORDER BY session_id")
     .all()
     .map((row) => String(row.session_id));
 }
 
-export function closeAuthDb(): void {
-  db?.close();
-  db = null;
-}
