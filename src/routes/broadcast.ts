@@ -6,6 +6,7 @@ import {
   cancelJob,
   createJob,
   getJob,
+  getRunningJobView,
 } from '../broadcast/scheduler.js'
 import { getCustomersByIds } from '../db/app.js'
 import {
@@ -95,6 +96,15 @@ function renderTemplate(text: string, name: string | null): string {
     .replace(/[ \t]{2,}/g, ' ')
     .trim()
 }
+
+app.get('/:id/broadcast/current', (c) => {
+  const id = sessionIdSchema.safeParse(c.req.param('id'))
+  if (!id.success) return c.json({ error: 'Invalid sessionId' }, 400)
+
+  const job = getRunningJobView(id.data)
+  if (!job) return c.json({ error: 'No running broadcast job' }, 404)
+  return c.json(job)
+})
 
 app.get('/:id/broadcast/:jobId', (c) => {
   const id = sessionIdSchema.safeParse(c.req.param('id'))

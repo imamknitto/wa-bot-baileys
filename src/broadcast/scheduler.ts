@@ -122,6 +122,14 @@ export function getJob(
   return getJobView(sessionId, jobId);
 }
 
+export function getRunningJobView(
+  sessionId: string,
+): BroadcastJobView | null {
+  const running = getRunningJob(sessionId);
+  if (!running) return null;
+  return getJobView(sessionId, running.jobId);
+}
+
 export function cancelJob(
   sessionId: string,
   jobId: string,

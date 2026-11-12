@@ -26,7 +26,6 @@ const customerNoteInput = $('customerNote')
 const customerError = $('customerError')
 const saveCustomerBtn = $('saveCustomerBtn')
 const broadcastForm = $('broadcastForm')
-const broadcastSessionSelect = $('broadcastSession')
 const broadcastText = $('broadcastText')
 const broadcastBtn = $('broadcastBtn')
 const broadcastError = $('broadcastError')
@@ -46,23 +45,51 @@ const jobResultsEl = $('jobResults')
 const cancelBroadcastBtn = $('cancelBroadcastBtn')
 const historyFilter = $('historyFilter')
 const historyList = $('historyList')
+const sessionPage = $('sessionPage')
+const sessionPageBody = $('sessionPageBody')
+const sessionPageMissing = $('sessionPageMissing')
+const sessionPageTitle = $('sessionPageTitle')
+const sessionPageMeta = $('sessionPageMeta')
+const sessionPageStatus = $('sessionPageStatus')
+const recipientSearch = $('recipientSearch')
+const recipientList = $('recipientList')
+const loadMoreRecipientsBtn = $('loadMoreRecipients')
+const recipientsCount = $('recipientsCount')
+const sessionHistoryList = $('sessionHistoryList')
+const composerModeHint = $('composerModeHint')
+const modeSingleBtn = $('modeSingle')
+const modeBroadcastBtn = $('modeBroadcast')
+const selectedLabel = $('selectedLabel')
+const manualLabel = $('manualLabel')
+const manualPhoneInput = $('manualPhone')
+const broadcastBtnLabel = $('broadcastBtnLabel')
+const templateHint = $('templateHint')
 
 const state = {
+  route: { name: 'dashboard', sessionId: null },
   sessions: [],
+  sessionsLoaded: false,
   sessionsSignature: '',
   sessionsLoading: false,
   customers: [],
   customersLoading: false,
   customerCursor: null,
   customerQuery: '',
-  selected: new Map(),
+  recipients: new Map(),
+  sessionCustomers: [],
+  sessionCustomersLoading: false,
+  sessionCustomerCursor: null,
+  sessionCustomerQuery: '',
   editingCustomerId: null,
   activeJob: null,
   lastJob: null,
   jobPolling: false,
   historyLoading: false,
   historySignature: '',
+  sessionHistoryLoading: false,
+  sessionHistorySignature: '',
   delay: { min: 30, max: 45 },
+  sendMode: 'single',
   pingMs: null,
 }
 
@@ -308,6 +335,7 @@ async function refreshSessions() {
       return
     }
     state.sessions = Array.isArray(body.sessions) ? body.sessions : []
+    state.sessionsLoaded = true
     for (const sessionId of [...qrCache.keys()]) {
       const session = state.sessions.find((item) => item.sessionId === sessionId)
       if (!session || session.status !== 'connecting' || session.mode !== 'qr') {
@@ -325,7 +353,8 @@ async function refreshSessions() {
     if (signature !== state.sessionsSignature) {
       state.sessionsSignature = signature
       renderSessions()
-      updateSessionSelectors()
+      renderSessionPage()
+      updateHistoryFilter()
     }
     await refreshCredentials()
   } catch {
@@ -360,6 +389,9 @@ function renderSessionCard(session) {
     el('div', { class: 'session-head' }, [
       el('span', { class: `dot ${session.status}` }),
       el('span', { class: 'session-title', text: session.sessionId, title: session.sessionId }),
+      state.activeJob?.sessionId === session.sessionId
+        ? el('span', { class: 'badge run', text: 'Broadcast berjalan' })
+        : null,
       statusBadge(session.status),
     ]),
   )
@@ -438,7 +470,7 @@ function renderSessionCard(session) {
     class: 'btn primary small',
     type: 'button',
     text: session.connected ? 'Kirim Pesan' : 'Belum Terhubung',
-    on: { click: () => focusComposer(session.sessionId) },
+    on: { click: () => navigateToSession(session.sessionId) },
   })
   sendBtn.disabled = !session.connected
   actions.append(sendBtn)
@@ -512,44 +544,10 @@ async function refreshCredentials() {
   )
 }
 
-function updateSessionSelectors() {
+function updateHistoryFilter() {
   const signature = state.sessions
     .map((session) => `${session.sessionId}:${session.status}`)
     .join('|')
-
-  if (broadcastSessionSelect.dataset.signature !== signature) {
-    const current = broadcastSessionSelect.value
-    broadcastSessionSelect.dataset.signature = signature
-    broadcastSessionSelect.textContent = ''
-
-    if (state.sessions.length === 0) {
-      broadcastSessionSelect.append(
-        el('option', {
-          text: 'Tidak ada sesi',
-          attrs: { value: '', disabled: true, selected: true },
-        }),
-      )
-      broadcastSessionSelect.disabled = true
-    } else {
-      broadcastSessionSelect.disabled = false
-      for (const session of state.sessions) {
-        broadcastSessionSelect.append(
-          el('option', {
-            text: `${session.sessionId}${session.connected ? '' : ` · ${statusLabels[session.status] ?? session.status}`}`,
-            attrs: { value: session.sessionId },
-          }),
-        )
-      }
-      const stillExists = state.sessions.some(
-        (session) => session.sessionId === current,
-      )
-      const preferred =
-        (stillExists && current) ||
-        state.sessions.find((session) => session.connected)?.sessionId ||
-        state.sessions[0]?.sessionId
-      broadcastSessionSelect.value = preferred
-    }
-  }
 
   if (historyFilter.dataset.signature !== signature) {
     const current = historyFilter.value
@@ -572,14 +570,6 @@ function updateSessionSelectors() {
   }
 
   updateComposer()
-}
-
-function focusComposer(sessionId) {
-  if (state.sessions.some((session) => session.sessionId === sessionId)) {
-    broadcastSessionSelect.value = sessionId
-  }
-  broadcastForm.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  broadcastText.focus({ preventScroll: true })
 }
 
 async function logoutSession(sessionId) {
@@ -616,6 +606,205 @@ async function deleteSession(sessionId) {
   await refreshStats()
 }
 
+/* ---------- router & session page ---------- */
+
+const SESSION_HASH_RE = /^\/session\/([A-Za-z0-9_\-]{1,32})$/
+
+function parseRoute() {
+  const match = location.hash.replace(/^#/, '').match(SESSION_HASH_RE)
+  if (!match) return { name: 'dashboard', sessionId: null }
+  return { name: 'session', sessionId: match[1] }
+}
+
+function navigateToSession(sessionId) {
+  location.hash = `#/session/${encodeURIComponent(sessionId)}`
+}
+
+function applyRoute() {
+  state.route = parseRoute()
+  const onSession = state.route.name === 'session'
+
+  for (const node of document.querySelectorAll('[data-route="dashboard"]')) {
+    node.classList.toggle('hidden', onSession)
+  }
+  sessionPage.classList.toggle('hidden', !onSession)
+
+  if (onSession) {
+    state.sessionCustomerQuery = ''
+    state.sessionCustomerCursor = null
+    recipientSearch.value = ''
+    state.sessionHistorySignature = ''
+    void loadSessionCustomers()
+    void refreshSessionHistory()
+    syncJobCard()
+    void resumeJobTracking(state.route.sessionId)
+  }
+
+  renderSessionPage()
+  renderSelection()
+  updateComposer()
+}
+
+function renderSessionPage() {
+  if (state.route.name !== 'session') return
+  sessionPageStatus.textContent = ''
+
+  const session = state.sessions.find(
+    (item) => item.sessionId === state.route.sessionId,
+  )
+
+  if (!session) {
+    sessionPageTitle.textContent = state.route.sessionId
+    sessionPageMeta.textContent = state.sessionsLoaded
+      ? 'Sesi tidak ditemukan.'
+      : 'Memuat sesi…'
+    sessionPageBody.classList.add('hidden')
+    sessionPageMissing.classList.remove('hidden')
+    return
+  }
+
+  sessionPageBody.classList.remove('hidden')
+  sessionPageMissing.classList.add('hidden')
+  sessionPageTitle.textContent = session.sessionId
+  sessionPageMeta.textContent = session.me
+    ? `+${phoneFromJid(session.me)} · ${formatNumber(session.sentToday ?? 0)} pesan hari ini`
+    : session.mode === 'qr'
+      ? 'Menunggu scan QR'
+      : 'Menunggu kode pairing'
+  sessionPageStatus.append(statusBadge(session.status))
+}
+
+function currentRecipients() {
+  let map = state.recipients.get(state.route.sessionId)
+  if (!map) {
+    map = new Map()
+    state.recipients.set(state.route.sessionId, map)
+  }
+  return map
+}
+
+async function loadSessionCustomers(append = false) {
+  if (state.sessionCustomersLoading) return
+  state.sessionCustomersLoading = true
+  try {
+    const params = new URLSearchParams({ limit: '50' })
+    if (state.sessionCustomerQuery) params.set('q', state.sessionCustomerQuery)
+    if (append && state.sessionCustomerCursor) {
+      params.set('cursor', String(state.sessionCustomerCursor))
+    }
+
+    const { res, body } = await api(`/customers?${params.toString()}`)
+    if (!res.ok) return
+
+    const rows = Array.isArray(body.customers) ? body.customers : []
+    state.sessionCustomers = append ? [...state.sessionCustomers, ...rows] : rows
+    state.sessionCustomerCursor = body.nextCursor ?? null
+
+    renderRecipients()
+  } catch {
+    // keep previous list on network errors
+  } finally {
+    state.sessionCustomersLoading = false
+  }
+}
+
+function renderRecipients() {
+  if (state.route.name !== 'session') return
+  recipientList.textContent = ''
+
+  const suffix = state.sessionCustomerCursor ? '+' : ''
+  recipientsCount.textContent = state.sessionCustomerQuery
+    ? `${state.sessionCustomers.length} hasil untuk “${state.sessionCustomerQuery}”`
+    : `${state.sessionCustomers.length}${suffix} customer terdaftar`
+
+  if (state.sessionCustomers.length === 0) {
+    recipientList.append(
+      el('p', {
+        class: 'empty',
+        text: state.sessionCustomerQuery
+          ? 'Customer tidak ditemukan.'
+          : 'Belum ada customer. Tambahkan dulu di dashboard.',
+      }),
+    )
+  }
+
+  const selected = currentRecipients()
+  for (const customer of state.sessionCustomers) {
+    recipientList.append(renderRecipientItem(customer, selected))
+  }
+
+  loadMoreRecipientsBtn.classList.toggle('hidden', !state.sessionCustomerCursor)
+}
+
+function renderRecipientItem(customer, selected) {
+  const item = el('div', {
+    class: `customer-item${selected.has(customer.id) ? ' selected' : ''}`,
+  })
+
+  const checkbox = el('input', {
+    attrs: {
+      type: 'checkbox',
+      'aria-label': `Pilih ${customer.name}`,
+    },
+  })
+  checkbox.checked = selected.has(customer.id)
+  checkbox.addEventListener('change', () => {
+    if (checkbox.checked) {
+      if (state.sendMode === 'single') {
+        selected.clear()
+        manualPhoneInput.value = customer.phone
+      }
+      selected.set(customer.id, customer)
+    } else {
+      selected.delete(customer.id)
+    }
+    for (const node of recipientList.querySelectorAll('.customer-item')) {
+      const input = node.querySelector('input[type="checkbox"]')
+      if (!input) continue
+      node.classList.toggle('selected', input.checked)
+    }
+    renderSelection()
+  })
+  const main = el('div', { class: 'customer-main' }, [
+    el('div', { class: 'customer-name', text: customer.name }),
+    el('div', { class: 'customer-phone', text: `+${customer.phone}` }),
+    customer.note
+      ? el('div', { class: 'customer-note', text: customer.note, title: customer.note })
+      : null,
+  ])
+
+  item.append(checkbox, main)
+  return item
+}
+
+function isJobVisible() {
+  return (
+    state.route.name === 'session' &&
+    state.activeJob?.sessionId === state.route.sessionId
+  )
+}
+
+function syncJobCard() {
+  const visible = isJobVisible()
+  broadcastProgress.classList.toggle('hidden', !visible)
+  cancelBroadcastBtn.classList.toggle('hidden', !visible)
+}
+
+async function resumeJobTracking(sessionId) {
+  if (state.activeJob) return
+  try {
+    const { res, body } = await api(
+      `/sessions/${enc(sessionId)}/broadcast/current`,
+    )
+    if (!res.ok) return
+    if (body && body.jobId && body.status === 'running') {
+      startJobTracking(sessionId, body.jobId)
+    }
+  } catch {
+    // ignore resume failures
+  }
+}
+
 /* ---------- customers ---------- */
 
 async function loadCustomers(append = false) {
@@ -636,12 +825,13 @@ async function loadCustomers(append = false) {
     state.customerCursor = body.nextCursor ?? null
 
     for (const customer of rows) {
-      if (state.selected.has(customer.id)) {
-        state.selected.set(customer.id, customer)
+      for (const map of state.recipients.values()) {
+        if (map.has(customer.id)) map.set(customer.id, customer)
       }
     }
 
     renderCustomers()
+    renderRecipients()
   } catch {
     // keep previous list on network errors
   } finally {
@@ -673,27 +863,10 @@ function renderCustomers() {
   }
 
   loadMoreBtn.classList.toggle('hidden', !state.customerCursor)
-  renderSelection()
 }
 
 function renderCustomerItem(customer) {
-  const item = el('div', {
-    class: `customer-item${state.selected.has(customer.id) ? ' selected' : ''}`,
-  })
-
-  const checkbox = el('input', {
-    attrs: {
-      type: 'checkbox',
-      'aria-label': `Pilih ${customer.name}`,
-    },
-  })
-  checkbox.checked = state.selected.has(customer.id)
-  checkbox.addEventListener('change', () => {
-    if (checkbox.checked) state.selected.set(customer.id, customer)
-    else state.selected.delete(customer.id)
-    item.classList.toggle('selected', checkbox.checked)
-    renderSelection()
-  })
+  const item = el('div', { class: 'customer-item' })
 
   const main = el('div', { class: 'customer-main' }, [
     el('div', { class: 'customer-name', text: customer.name }),
@@ -722,16 +895,18 @@ function renderCustomerItem(customer) {
     }),
   ])
 
-  item.append(checkbox, main, actions)
+  item.append(main, actions)
   return item
 }
 
 function renderSelection() {
-  const count = state.selected.size
+  if (state.route.name !== 'session') return
+
+  const chosen = [...currentRecipients().values()]
+  const count = chosen.length
   selectedCountEl.textContent = `${count} customer`
   selectedChipsEl.textContent = ''
 
-  const chosen = [...state.selected.values()]
   for (const customer of chosen.slice(0, 4)) {
     selectedChipsEl.append(el('span', { class: 'chip', text: customer.name }))
   }
@@ -767,9 +942,10 @@ async function removeCustomer(customer) {
     return
   }
 
-  state.selected.delete(customer.id)
+  state.recipients.forEach((map) => map.delete(customer.id))
   await loadCustomers()
   await refreshStats()
+  renderSelection()
 }
 
 function showCustomerError(message) {
@@ -892,12 +1068,55 @@ function showSessionError(message) {
 
 /* ---------- composer ---------- */
 
+function manualPhoneDigits() {
+  return digitsOnly(manualPhoneInput.value)
+}
+
+function setSendMode(mode) {
+  if (mode !== 'single' && mode !== 'broadcast') return
+  state.sendMode = mode
+  const single = mode === 'single'
+
+  modeSingleBtn.classList.toggle('active', single)
+  modeSingleBtn.setAttribute('aria-pressed', String(single))
+  modeBroadcastBtn.classList.toggle('active', !single)
+  modeBroadcastBtn.setAttribute('aria-pressed', String(!single))
+
+  selectedLabel.classList.toggle('hidden', single)
+  selectedChipsEl.classList.toggle('hidden', single)
+  manualLabel.classList.toggle('hidden', !single)
+
+  composerModeHint.textContent = single
+    ? 'Masukkan nomor WhatsApp, lalu kirim langsung tanpa jeda.'
+    : 'Pilih beberapa customer, lalu kirim dengan delay acak sesuai preset.'
+
+  broadcastBtnLabel.textContent = single ? 'Kirim Pesan' : 'Kirim Broadcast'
+  broadcastText.placeholder = single
+    ? 'Tulis pesan…'
+    : 'Halo {nama}, ada promo khusus hari ini…'
+  templateHint.classList.toggle('hidden', single)
+  showBroadcastError('')
+  if (state.route.name === 'session') renderRecipients()
+  renderSelection()
+  updateComposer()
+}
+
 function updateComposer() {
   const { min, max } = state.delay
-  const count = state.selected.size
-  const eligible = state.sessions.some((session) => session.connected)
+  const onSession = state.route.name === 'session'
+  const single = state.sendMode === 'single'
+  const count = onSession ? currentRecipients().size : 0
+  const session = onSession
+    ? state.sessions.find((item) => item.sessionId === state.route.sessionId)
+    : null
+  const eligible = Boolean(session?.connected)
 
-  if (count === 0) {
+  if (single) {
+    composerEstimate.textContent =
+      manualPhoneDigits().length >= 8
+        ? 'Kirim langsung ke 1 nomor, tanpa jeda.'
+        : 'Masukkan nomor WhatsApp dulu.'
+  } else if (count === 0) {
     composerEstimate.textContent = 'Pilih customer dulu.'
   } else if (count === 1) {
     composerEstimate.textContent = '1 penerima · tanpa jeda awal.'
@@ -905,18 +1124,28 @@ function updateComposer() {
     composerEstimate.textContent = `Estimasi total ${formatDuration((count - 1) * min)} – ${formatDuration((count - 1) * max)} untuk ${count} penerima.`
   }
 
-  composerDelay.textContent = `Jeda acak ${min}–${max} dtk per pesan`
+  composerDelay.textContent = single
+    ? 'Mode 1 orang: tanpa delay'
+    : `Jeda acak ${min}–${max} dtk per pesan`
 
-  const ready =
-    count > 0 &&
-    broadcastText.value.trim().length > 0 &&
-    eligible &&
-    !state.activeJob
+  const ready = single
+    ? manualPhoneDigits().length >= 8 &&
+      manualPhoneDigits().length <= 15 &&
+      broadcastText.value.trim().length > 0 &&
+      eligible &&
+      !state.activeJob
+    : count > 0 &&
+      broadcastText.value.trim().length > 0 &&
+      eligible &&
+      !state.activeJob
   broadcastBtn.disabled = !ready
 }
 
 broadcastText.addEventListener('input', updateComposer)
-broadcastSessionSelect.addEventListener('change', updateComposer)
+manualPhoneInput.addEventListener('input', updateComposer)
+
+modeSingleBtn.addEventListener('click', () => setSendMode('single'))
+modeBroadcastBtn.addEventListener('click', () => setSendMode('broadcast'))
 
 for (const button of document.querySelectorAll('.preset')) {
   button.addEventListener('click', () => {
@@ -930,38 +1159,74 @@ delayMaxInput.addEventListener('change', readCustomDelay)
 broadcastForm.addEventListener('submit', async (event) => {
   event.preventDefault()
 
-  const sessionId = broadcastSessionSelect.value
+  const sessionId = state.route.sessionId
   const session = state.sessions.find((item) => item.sessionId === sessionId)
-  if (!sessionId || !session) return showBroadcastError('Pilih sesi pengirim.')
+  if (state.route.name !== 'session' || !sessionId || !session) {
+    return showBroadcastError('Sesi tidak ditemukan.')
+  }
 
-  const customerIds = [...state.selected.keys()]
-  if (customerIds.length === 0) {
-    return showBroadcastError('Pilih minimal satu customer.')
-  }
-  if (customerIds.length > 100) {
-    return showBroadcastError('Maksimal 100 penerima per broadcast.')
-  }
+  const text = broadcastText.value.trim()
+  if (!text) return showBroadcastError('Isi pesan belum diisi.')
+
   if (!session.connected) {
     return showBroadcastError(
       'Sesi belum terhubung. Selesaikan pairing/QR dulu.',
     )
   }
 
-  const text = broadcastText.value.trim()
-  if (!text) return showBroadcastError('Isi pesan belum diisi.')
+  const single = state.sendMode === 'single'
 
-  if (!readCustomDelay()) {
-    return showBroadcastError('Rentang delay tidak valid (10–600 detik).')
-  }
-
-  const { min, max } = state.delay
-  if (!isValidDelay(min, max)) {
-    return showBroadcastError('Rentang delay tidak valid (10–600 detik).')
+  if (single) {
+    const phone = manualPhoneDigits()
+    if (phone.length < 8 || phone.length > 15) {
+      return showBroadcastError('Nomor WhatsApp harus 8–15 digit.')
+    }
+  } else {
+    if (currentRecipients().size === 0) {
+      return showBroadcastError('Pilih minimal satu customer.')
+    }
+    if (currentRecipients().size > 100) {
+      return showBroadcastError('Maksimal 100 penerima per broadcast.')
+    }
+    if (!readCustomDelay()) {
+      return showBroadcastError('Rentang delay tidak valid (10–600 detik).')
+    }
+    const { min, max } = state.delay
+    if (!isValidDelay(min, max)) {
+      return showBroadcastError('Rentang delay tidak valid (10–600 detik).')
+    }
   }
 
   showBroadcastError('')
   broadcastBtn.disabled = true
   try {
+    if (single) {
+      const { res, body } = await api(
+        `/sessions/${enc(sessionId)}/send`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: manualPhoneDigits(), text }),
+        },
+      )
+
+      if (!res.ok) {
+        showBroadcastError(errorText(res, body))
+        updateComposer()
+        return
+      }
+
+      showBroadcastError('')
+      broadcastText.value = ''
+      updateComposer()
+      void refreshStats()
+      void refreshHistory()
+      void refreshSessionHistory()
+      return
+    }
+
+    const customerIds = [...currentRecipients().keys()]
+    const { min, max } = state.delay
     const { res, body } = await api(
       `/sessions/${enc(sessionId)}/broadcast`,
       {
@@ -985,7 +1250,7 @@ broadcastForm.addEventListener('submit', async (event) => {
     startJobTracking(sessionId, body.jobId)
   } catch (err) {
     showBroadcastError(
-      err instanceof Error ? err.message : 'Gagal memulai broadcast.',
+      err instanceof Error ? err.message : 'Gagal mengirim pesan.',
     )
     updateComposer()
   }
@@ -1007,6 +1272,7 @@ function startJobTracking(sessionId, jobId) {
   cancelBroadcastBtn.disabled = false
 
   stopJobTimers()
+  renderSessions()
   void pollJob()
   jobPollTimer = setInterval(pollJob, 2000)
   countdownTimer = setInterval(updateCountdown, 1000)
@@ -1023,22 +1289,24 @@ async function pollJob() {
     )
 
     if (!res.ok) {
-      showBroadcastError(errorText(res, body))
+      if (isJobVisible()) showBroadcastError(errorText(res, body))
       if (res.status === 404) stopJobTracking()
       return
     }
 
     state.lastJob = body
-    renderJob(body)
+    if (isJobVisible()) renderJob(body)
 
     if (body.status !== 'running') {
       stopJobTimers()
       state.activeJob = null
       cancelBroadcastBtn.classList.add('hidden')
+      renderSessions()
       updateComposer()
       void refreshSessions()
       void refreshStats()
       void refreshHistory()
+      void refreshSessionHistory()
     }
   } catch (err) {
     showBroadcastError(
@@ -1081,6 +1349,7 @@ function renderJob(job) {
 }
 
 function updateCountdown() {
+  if (!isJobVisible()) return
   const job = state.lastJob
   if (!job) return
   if (job.status !== 'running') {
@@ -1108,6 +1377,7 @@ function stopJobTracking() {
   state.lastJob = null
   broadcastProgress.classList.add('hidden')
   cancelBroadcastBtn.classList.add('hidden')
+  renderSessions()
   updateComposer()
 }
 
@@ -1122,7 +1392,7 @@ cancelBroadcastBtn.addEventListener('click', async () => {
   )
 
   if (!res.ok) {
-    showBroadcastError(errorText(res, body))
+    if (isJobVisible()) showBroadcastError(errorText(res, body))
     cancelBroadcastBtn.disabled = false
     return
   }
@@ -1146,7 +1416,7 @@ async function refreshHistory() {
     const signature = JSON.stringify(messages)
     if (signature !== state.historySignature) {
       state.historySignature = signature
-      renderHistory(messages)
+      renderHistory(historyList, messages, true)
     }
   } catch {
     // keep previous history on network errors
@@ -1155,11 +1425,35 @@ async function refreshHistory() {
   }
 }
 
-function renderHistory(messages) {
-  historyList.textContent = ''
+async function refreshSessionHistory() {
+  if (state.route.name !== 'session' || state.sessionHistoryLoading) return
+  state.sessionHistoryLoading = true
+  try {
+    const params = new URLSearchParams({
+      limit: '15',
+      sessionId: state.route.sessionId,
+    })
+
+    const { res, body } = await api(`/messages?${params.toString()}`)
+    if (!res.ok) return
+    const messages = Array.isArray(body.messages) ? body.messages : []
+    const signature = JSON.stringify(messages)
+    if (signature !== state.sessionHistorySignature) {
+      state.sessionHistorySignature = signature
+      renderHistory(sessionHistoryList, messages, false)
+    }
+  } catch {
+    // keep previous history on network errors
+  } finally {
+    state.sessionHistoryLoading = false
+  }
+}
+
+function renderHistory(target, messages, withSession) {
+  target.textContent = ''
 
   if (messages.length === 0) {
-    historyList.append(
+    target.append(
       el('li', { class: 'empty', text: 'Belum ada riwayat pengiriman.' }),
     )
     return
@@ -1168,13 +1462,15 @@ function renderHistory(messages) {
   for (const message of messages) {
     const name = message.customerName ?? `+${phoneFromJid(message.to)}`
     const preview = message.text ? message.text.replace(/\s+/g, ' ') : '—'
-    historyList.append(
+    target.append(
       el('li', { class: 'history-item' }, [
         el('span', {
           class: `dot ${message.status === 'sent' ? 'connected' : 'error'}`,
         }),
         el('div', { class: 'history-who' }, [
-          el('strong', { text: `${message.sessionId} → ${name}` }),
+          el('strong', {
+            text: withSession ? `${message.sessionId} → ${name}` : name,
+          }),
           el('div', { class: 'history-text', text: preview, title: preview }),
         ]),
         el('div', { class: 'history-time' }, [
@@ -1206,13 +1502,32 @@ async function deleteHistoryMessage(id) {
   }
 
   state.historySignature = ''
+  state.sessionHistorySignature = ''
   await refreshHistory()
+  await refreshSessionHistory()
   await refreshStats()
 }
 
 historyFilter.addEventListener('change', () => {
   void refreshHistory()
 })
+
+$('backToDashboard').addEventListener('click', () => {
+  location.hash = '#/'
+})
+
+window.addEventListener('hashchange', applyRoute)
+
+recipientSearch.addEventListener('input', () => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    state.sessionCustomerQuery = recipientSearch.value.trim()
+    state.sessionCustomerCursor = null
+    loadSessionCustomers()
+  }, 250)
+})
+
+loadMoreRecipientsBtn.addEventListener('click', () => loadSessionCustomers(true))
 
 /* ---------- global events ---------- */
 
@@ -1255,7 +1570,8 @@ apiKeyInput.value = localStorage.getItem(KEY_STORAGE) ?? ''
 loadDelay()
 setDelay(state.delay.min, state.delay.max, false)
 updateModeUi()
-updateComposer()
+setSendMode('single')
+applyRoute()
 
 void refreshService()
 void refreshStats()
@@ -1266,4 +1582,7 @@ void refreshHistory()
 setInterval(() => void refreshService(), 15000)
 setInterval(() => void refreshStats(), 8000)
 setInterval(() => void refreshSessions(), 3000)
-setInterval(() => void refreshHistory(), 6000)
+setInterval(() => {
+  void refreshHistory()
+  void refreshSessionHistory()
+}, 6000)

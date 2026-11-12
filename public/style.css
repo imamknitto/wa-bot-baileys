@@ -5,8 +5,8 @@
   --border-strong: #d1d5db;
   --text: #1f2937;
   --muted: #6b7280;
-  --accent: #f97316;
-  --accent-dark: #ea580c;
+  --accent: #ea580c;
+  --accent-dark: #c2410c;
   --accent-soft: #fff7ed;
   --ok: #16a34a;
   --ok-soft: #ecfdf3;
@@ -391,6 +391,12 @@ textarea::placeholder {
   border-color: #fecaca;
 }
 
+.badge.run {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  border-color: #fed7aa;
+}
+
 .field-label {
   font-size: 12px;
   font-weight: 600;
@@ -720,6 +726,45 @@ textarea::placeholder {
 
 /* ---------- Composer ---------- */
 
+.mode-toggle {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+
+.mode-btn {
+  flex: 1;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  border: 0;
+  border-radius: 7px;
+  padding: 8px 10px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.mode-btn:hover {
+  color: var(--text);
+}
+
+.mode-btn.active {
+  background: var(--card);
+  color: var(--accent-dark);
+  box-shadow: var(--shadow);
+}
+
+.mode-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .selected-count {
   display: inline-block;
   margin-top: 6px;
@@ -815,6 +860,34 @@ textarea::placeholder {
   color: var(--muted);
 }
 
+/* ---------- Page head (session page) ---------- */
+
+.page-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.page-head h2 {
+  font-size: 17px;
+}
+
+.page-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-head select {
+  width: auto;
+  min-width: 150px;
+  margin-top: 0;
+  font-size: 12px;
+  padding: 7px 9px;
+}
+
 /* ---------- History ---------- */
 
 .history {
@@ -831,22 +904,13 @@ textarea::placeholder {
   margin-bottom: 10px;
 }
 
-.history-head select {
-  width: auto;
-  min-width: 130px;
-  margin-top: 0;
-  font-size: 12px;
-  padding: 6px 9px;
+.history-panel .history-list {
+  max-height: 520px;
+  overflow-y: auto;
 }
 
-.history-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 7px;
-  max-height: 220px;
-  overflow-y: auto;
+.history-panel .history-item {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
 }
 
 .history-item {
