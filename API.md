@@ -4,16 +4,16 @@ Kontrak HTTP API untuk `wa-bot-service`. Dokumen ini adalah acuan request/respon
 
 - Base URL: `http://localhost:<PORT>` (default `http://localhost:8365`)
 - Format: JSON (`Content-Type: application/json` untuk request ber-body)
-- Auth: `x-api-key` (admin) atau `Authorization: Bearer <token sesi>` untuk `/sessions/*`; `/stats` dan `/messages` hanya `x-api-key`; `GET /` publik
+- Auth: `x-api-key` (admin) atau `Authorization: Bearer <token sesi>` untuk `/sessions/*`; `/stats` dan `/messages` hanya `x-api-key`; `GET /` dan `GET /docs` publik
 - Semua timestamp memakai epoch milliseconds
+- Referensi interaktif: `GET /docs` (Scalar) dari dokumen OpenAPI `GET /docs/openapi.json`
 
 ## Daftar isi
 
 - [Konvensi](#konvensi)
 - [Objek umum](#objek-umum)
 - [Service](#service)
-- [Sesi](#sesi)
-- [Pesan](#pesan)
+- [Sesi](#sesi)- [Pesan](#pesan)
 - [Broadcast](#broadcast)
 - [Statistik dan riwayat](#statistik-dan-riwayat)
 - [Webhook](#webhook)
@@ -222,6 +222,15 @@ Info service publik. Tidak memerlukan API key.
 { "name": "wa-bot-service", "version": "1.0.0", "status": "ok" }
 ```
 
+### `GET /docs`
+
+API reference interaktif (Scalar) yang merender dokumen OpenAPI di bawah. Publik, tidak memerlukan API key. Bisa dipakai untuk mencoba request langsung dengan mengisi `x-api-key` atau bearer token lewat tombol Authorize.
+
+### `GET /docs/openapi.json`
+
+Dokumen OpenAPI 3.1 yang menjadi sumber halaman `/docs`. Publik. Berguna untuk impor Postman/Insomnia atau codegen client. Skema request dan path param di-generate dari schema Zod di `packages/api/src/validation.ts`, jadi selalu sinkron dengan validasi route.
+
+
 ## Sesi
 
 ### `POST /sessions`
@@ -359,6 +368,32 @@ Kode pairing terakhir untuk sesi mode `pairing`.
 - Permintaan kode dibatasi cooldown 60 detik per sesi.
 
 **Error:** `400`, `401`, `403`, `404`.
+
+### `POST /sessions/:id/login`
+
+Admin only. Menautkan ulang perangkat untuk sesi yang sudah logout tanpa membuat sesi baru dan tanpa menerbitkan token baru. Sesi dijalankan kembali dalam mode `qr`; ambil QR lewat `GET /sessions/:id/qr`. `salesId`, `agentId`, dan token sesi yang ada tidak berubah.
+
+`session_meta` untuk `:id` harus ada (`404` jika tidak). Status `connected`/`connecting` menghasilkan `409`.
+
+**Response `202`**
+
+```json
+{
+  "ok": true,
+  "sessionId": "sales-12",
+  "mode": "qr",
+  "status": "connecting",
+  "connected": false,
+  "me": null,
+  "hasQr": false,
+  "hasPairingCode": false,
+  "pairingError": null,
+  "salesId": "S-12",
+  "agentId": "A-3"
+}
+```
+
+**Error:** `400`, `401`, `403` (memakai token sales), `404`, `409`, `500`.
 
 ### `POST /sessions/:id/logout`
 

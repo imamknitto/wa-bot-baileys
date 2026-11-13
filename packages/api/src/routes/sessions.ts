@@ -140,6 +140,31 @@ app.post('/:id/token', (c) => {
   return c.json({ ok: true, sessionId: parsed.data, token })
 })
 
+app.post('/:id/login', async (c) => {
+  if (!isAdmin(c)) return c.json({ error: 'Forbidden' }, 403)
+
+  const parsed = sessionIdSchema.safeParse(c.req.param('id'))
+  if (!parsed.success) return c.json({ error: 'Invalid sessionId' }, 400)
+
+  if (!getSessionMeta(parsed.data)) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  try {
+    const session = await startSession(parsed.data, { mode: 'qr', phone: null })
+    return c.json({ ok: true, ...withMeta(session) }, 202)
+  } catch (err) {
+    if (err instanceof SessionActiveError) {
+      return c.json({ ok: false, error: err.message }, 409)
+    }
+    if (err instanceof SessionLimitError) {
+      return c.json({ ok: false, error: err.message }, 409)
+    }
+    console.error(`Failed to restart session ${parsed.data}:`, err)
+    return c.json({ error: 'Failed to restart session' }, 500)
+  }
+})
+
 app.post('/:id/logout', async (c) => {
   if (!isAdmin(c)) return c.json({ error: 'Forbidden' }, 403)
 

@@ -1,6 +1,6 @@
 # wa-bot-service
 
-WhatsApp bot service multi-sesi memakai [Hono](https://hono.dev) + [Baileys](https://github.com/WhiskeySockets/Baileys).
+WhatsApp bot platform multi-sesi memakai [Hono](https://hono.dev) + [Baileys](https://github.com/WhiskeySockets/Baileys), dengan dashboard web React + TanStack Router di `packages/web`.
 
 Service ini adalah **lapisan pengiriman WhatsApp** untuk aplikasi remarketing. Service **tidak menyimpan data customer**; data customer, sales, dan template tetap milik aplikasi remarketing. Satu sesi = satu socket WhatsApp = satu nomor milik satu sales.
 
@@ -15,18 +15,38 @@ Dokumentasi API: [API.md](./API.md).
 
 ## Setup
 
+Repo ini adalah **monorepo pnpm workspace** dengan dua package:
+
+- `packages/api` — service Hono + Baileys (API WhatsApp).
+- `packages/web` — dashboard React + TanStack Router + Tailwind (dilayani di `/app`).
+
 ```bash
-npm install
+pnpm install
 cp .env.example .env   # set API_KEY dan PORT
-npm run dev
+pnpm dev               # api di :8365 + web (vite) di :5173/app/
 ```
 
-Butuh **Node.js >= 24** karena memakai `node:sqlite` bawaan.
+Butuh **Node.js >= 24** (karena `node:sqlite`) dan **pnpm >= 9** (`corepack enable pnpm`).
+
+Script utama di root:
+
+| Script         | Isi                                                        |
+| -------------- | ---------------------------------------------------------- |
+| `pnpm dev`     | api (`tsx watch`) + web (`vite`) paralel                    |
+| `pnpm dev:api` | hanya api                                                   |
+| `pnpm dev:web` | hanya web (proxy API mengikuti `PORT` di `.env`)             |
+| `pnpm build`   | build semua package (api → `dist/`, web → `packages/web/dist`) |
+| `pnpm start`   | jalankan hasil build api                                    |
+| `pnpm smoke*`  | smoke test DB/HTTP/migrasi                                  |
+
+`.env` tetap di root dan dibaca api dari lokasi mana pun (fallback: `.env` → `../../.env`). `DB_PATH` relatif di-resolve terhadap root monorepo, bukan cwd proses. Proxy vite dev membaca `.env` root yang sama; `PORT` dipakai sebagai port api, `API_PORT` menimpanya bila diisi.
 
 | Env                      | Default         | Keterangan                                                          |
 | ------------------------ | --------------- | ------------------------------------------------------------------- |
 | `API_KEY`                | (wajib)         | Header `x-api-key`, kunci admin untuk semua endpoint                 |
 | `PORT`                   | `8365`          | Port HTTP                                                           |
+| `HOST`                   | `0.0.0.0`       | Alamat bind; set `127.0.0.1` agar hanya bisa diakses dari mesin ini |
+| `SERVE_WEB`              | `true`          | `false` = jangan layani `packages/web/dist` di `/app` (dev: api otomatis `false`) |
 | `DB_PATH`                | `data/app.db`   | SQLite untuk auth, sesi, job broadcast, `message_log`, `webhook_events` |
 | `MAX_SESSIONS`           | `10`            | Batas jumlah sesi aktif                                             |
 | `LOG_RETENTION_DAYS`     | `30`            | Retensi `message_log`, dibersihkan tiap 24 jam                      |
@@ -36,7 +56,8 @@ Butuh **Node.js >= 24** karena memakai `node:sqlite` bawaan.
 | `WEBHOOK_RETENTION_DAYS` | `7`             | Retensi baris `webhook_events` yang sudah selesai                   |
 
 - `GET /` → info service dalam JSON.
-- `GET /demo` → dashboard UI.
+- `GET /docs` → API reference interaktif (Scalar) dari `GET /docs/openapi.json`. Publik, tanpa API key.
+- `GET /app/` → dashboard web (hasil build `packages/web`, dilayani oleh api). Saat `pnpm dev:api`, `/app` tidak menyajikan `dist` dan dialihkan ke `http://localhost:5173/app/` (vite).
 - Endpoint `/sessions/*`, `/stats`, dan `/messages` menerima `x-api-key` (admin) atau `Authorization: Bearer <token>` (akses satu sesi).
 
 ## Database
@@ -49,25 +70,26 @@ Butuh **Node.js >= 24** karena memakai `node:sqlite` bawaan.
 
 ## Alur sistem
 
-Urutan start di `src/index.ts`:
+Urutan start di `packages/api/src/index.ts`:
 
 ```
 loadEnvFile → getConfig → initAppDb (buka DB + migrasi) → scheduler.initialize
            → serve(:PORT) → restoreSessions → scheduler.start + webhook.start
 ```
 
-Lapisan kode — route tipis, semua akses socket lewat satu modul:
+Lapisan kode (semua di `packages/api/src`) — route tipis, semua akses socket lewat satu modul:
 
-- `src/app.ts` merangkai route + auth admin/sales. Route tidak pernah membuat socket.
-- `src/auth/session-token.ts` menerbitkan, memutar, dan memverifikasi token sesi (SHA-256 hash, plaintext hanya dikembalikan sekali).
-- `src/wa/manager.ts` pemilik socket: `startSession`, `sendText`, `logoutSession`, `deleteSession`, `restoreSessions`.
-- `src/db/auth.ts` menyimpan state Baileys (`credentials`, `signal_keys`) memakai koneksi DB yang sama dengan data aplikasi (`src/db/app.ts`).
-- `src/broadcast/store.ts` query + recovery job; `src/broadcast/scheduler.ts` tick 1 detik mengambil penerima yang jatuh tempo.
-- `src/webhook/store.ts` antrean event; `src/webhook/dispatcher.ts` pengirim dengan retry + tanda tangan HMAC.
+- `app.ts` merangkai route + auth admin/sales + penyajian web. Route tidak pernah membuat socket.
+- `auth/session-token.ts` menerbitkan, memutar, dan memverifikasi token sesi (SHA-256 hash, plaintext hanya dikembalikan sekali).
+- `wa/manager.ts` pemilik socket: `startSession`, `sendText`, `logoutSession`, `deleteSession`, `restoreSessions`.
+- `db/auth.ts` menyimpan state Baileys (`credentials`, `signal_keys`) memakai koneksi DB yang sama dengan data aplikasi (`db/app.ts`).
+- `broadcast/store.ts` query + recovery job; `broadcast/scheduler.ts` tick 1 detik mengambil penerima yang jatuh tempo.
+- `webhook/store.ts` antrean event; `webhook/dispatcher.ts` pengirim dengan retry + tanda tangan HMAC.
 
 | Operasi | Jalur | Yang ditulis |
 | --- | --- | --- |
 | Pairing / sesi baru | `POST /sessions` → `startSession` → ambil QR atau kode lewat `GET /sessions/:id/qr` / `.../pairing` | `credentials`, `signal_keys`, `session_meta`, `session_tokens` |
+| Login ulang setelah logout | `POST /sessions/:id/login` → `startSession` (mode QR) → `GET /sessions/:id/qr` | `credentials`, `signal_keys` |
 | Kirim pesan | `POST /sessions/:id/send` → `sendText` | `message_log`, `webhook_events` |
 | Broadcast | `POST /sessions/:id/broadcast` → `createJob` (dedupe JID) → scheduler → `sendText` | `broadcast_jobs`, `broadcast_recipients`, `message_log`, `webhook_events` |
 | Restart | `restoreSessions()` membaca `credentials` → connect ulang atau QR; sisa status `sending` jadi `failed` (`interrupted`) | `broadcast_recipients` |
@@ -81,7 +103,7 @@ Pesan masuk tidak disimpan; hanya pesan keluar yang masuk `message_log`.
 - `sessionId` yang sudah dimiliki sales lain tidak bisa dipakai ulang (`409`).
 - Respons `POST /sessions` mengembalikan `token` **sekali saja**. Simpan di app remarketing.
 - Token hanya bisa dipakai untuk sesi miliknya: request ke `/sessions/<id-lain>/*` menghasilkan `403`, bukan `404`.
-- Endpoint lifecycle sesi (`POST /sessions`, `POST /sessions/:id/token`, `POST /sessions/:id/logout`, `DELETE /sessions/:id`) hanya untuk admin (`x-api-key`).
+- Endpoint lifecycle sesi (`POST /sessions`, `POST /sessions/:id/login`, `POST /sessions/:id/token`, `POST /sessions/:id/logout`, `DELETE /sessions/:id`) hanya untuk admin (`x-api-key`).
 - `GET /sessions` menerima keduanya: admin melihat semua sesi, token sales hanya melihat sesinya sendiri.
 - Sales boleh memakai: `GET /sessions`, `GET /sessions/:id/status`, `.../qr`, `.../pairing`, `POST .../send`, `POST .../broadcast`, `GET .../broadcast/*`, `GET .../messages`.
 - `POST /sessions/:id/logout` dan `DELETE /sessions/:id` mem-revoke semua token sesi tersebut.
@@ -93,7 +115,7 @@ Pesan masuk tidak disimpan; hanya pesan keluar yang masuk `message_log`.
 - Auth state disimpan di tabel `credentials` dan `signal_keys` pada `DB_PATH`.
 - Saat server start, semua sesi yang punya baris `credentials` dipulihkan otomatis dengan jeda antar sesi. Sesi yang sudah terpasang langsung connect tanpa pairing ulang; sesi yang belum selesai pairing dipulihkan dalam mode QR.
 - Satu `sessionId` hanya boleh punya satu socket. Sesi yang putus akan reconnect sendiri dengan exponential backoff (2 detik sampai 60 detik + jitter) tanpa mengganggu sesi lain.
-- Logout menghapus baris auth sesi tersebut. Untuk pairing ulang, panggil `POST /sessions` dengan `sessionId` yang sama (status sesi harus `logged_out`/`disconnected`).
+- Logout menghapus baris auth sesi tersebut. Untuk pairing ulang, panggil `POST /sessions/:id/login` (mode QR, tanpa token/meta baru) atau `POST /sessions` dengan `sessionId` yang sama (status sesi harus `logged_out`/`disconnected`).
 - `DELETE /sessions/:id` logout jika perlu, menghapus auth, meta sesi, token, dan sesi dari manager, serta menandai job broadcast yang berjalan sebagai `failed`. Riwayat `message_log` dan job lama tidak dihapus.
 
 `sessionId` divalidasi dengan pola `^[a-zA-Z0-9_-]{1,32}$`. Nilai seperti `../`, garis miring, atau lebih dari 32 karakter ditolak `400` untuk mencegah path traversal.
@@ -166,9 +188,13 @@ Ambil QR terbaru sebagai data-URL PNG di `GET /sessions/:id/qr`. QR diperbarui o
 
 Kontrak API lengkap — request, response, status code, dan contoh — ada di **[API.md](./API.md)**.
 
+Referensi interaktif tersedia di `http://localhost:<PORT>/docs` (Scalar, dibangun dari `packages/api/src/openapi.ts`). Dokumen OpenAPI mentahnya di `GET /docs/openapi.json` — publik, bisa diimpor ke Postman atau dipakai untuk codegen. Halaman `/docs` memuat script Scalar dari CDN jsDelivr, jadi butuh koneksi internet di browser; API-nya sendiri tidak.
+
 | Method   | Path                                    | Akses  | Keterangan                     |
 | -------- | --------------------------------------- | ------ | ------------------------------ |
 | `GET`    | `/`                                     | publik | Info service                   |
+| `GET`    | `/docs`                                 | publik | API reference (Scalar)         |
+| `GET`    | `/docs/openapi.json`                    | publik | Dokumen OpenAPI 3.1            |
 | `POST`   | `/sessions`                             | admin  | Buat sesi + terbitkan token    |
 | `GET`    | `/sessions`                             | admin/sales | Daftar sesi (sales: hanya miliknya) |
 | `POST`   | `/sessions/:id/token`                   | admin  | Putar token sesi               |
@@ -193,24 +219,25 @@ Endpoint `/sessions/*` menerima `x-api-key` (admin) atau `Authorization: Bearer 
 
 Pesan teks masuk `"ping"` dari chat mana pun otomatis dibalas `"pong"` pada sesi yang menerimanya. Pesan masuk tidak disimpan.
 
-## UI Demo
+## Dashboard web
 
-Buka `http://localhost:<PORT>/demo`. Dashboard menyediakan:
+Buka `http://localhost:<PORT>/app/` (hasil build) atau `http://localhost:5173/app/` saat `pnpm dev`.
 
-- input API key dan token sesi (disimpan di localStorage),
-- kartu ringkasan: status server + ping, sesi aktif, jeda anti-ban, total pesan,
-- pengaturan jeda anti-ban dengan preset 10s / 30s / 1mnt / 2mnt atau rentang min–maks bebas (10–600 detik, acak per pesan),
-- daftar sesi dalam kartu: status, nomor, salesId/agentId, pesan hari ini, QR/pairing, badge broadcast berjalan, tombol logout, dan hapus,
-- form tambah sesi dengan Sales ID, Agent ID opsional, dan Session ID opsional (token ditampilkan sekali),
-- riwayat pengiriman gabungan semua sesi (dashboard) dengan filter per sesi,
-- halaman per sesi di `#/session/<sessionId>`: editor daftar penerima manual (nama + nomor, maksimal 100), komposer single/broadcast dengan estimasi durasi, progres, hitung mundur, tombol batal, dan riwayat sesi tersebut.
+- Login memakai API key admin; key disimpan di `sessionStorage` tab (hilang saat tab ditutup).
+- Halaman `/app/overview`: kartu ringkasan (sesi terhubung, pesan hari ini, total pesan, broadcast berjalan), status service, dan progres job broadcast aktif.
+- Halaman `/app/numbers`: tabel sesi (sales, agent, status, terkirim hari ini) + dialog tambah nomor (mode QR atau pairing, token ditampilkan sekali).
+- Halaman `/app/numbers/<sessionId>` dengan tab Koneksi (QR/pairing otomatis di-refresh, tombol “Login ulang dengan QR” saat sesi logout), Kirim (single send dengan `referenceId`), Broadcast (penerima `nomor,nama` per baris, delay min–maks 10–600 detik, progres live, batal), dan Riwayat sesi.
+- Halaman `/app/history`: riwayat pesan gabungan semua sesi + filter Session ID + hapus catatan.
+- Halaman `/app/settings`: default delay broadcast (localStorage), info service, catatan privasi.
 
-File statis ada di `public/`, disajikan khusus di `/demo`.
+Kode ada di `packages/web` (React 19 + TanStack Router file-based + Tailwind v4). Saat produksi, api menyajikan `packages/web/dist` di `/app` dengan fallback SPA untuk `Accept: text/html`; path API tidak pernah tertabrak UI.
 
 ## Breaking changes
 
+- Dashboard vanilla (`public/` di `/demo`) diganti aplikasi React di `/app`. Route API tidak berubah.
+- Repo berubah menjadi monorepo pnpm (`packages/api`, `packages/web`); pakai `pnpm`, bukan `npm`.
 - Endpoint lama `/status`, `/qr`, `/send`, `/login`, `/logout`, dan `/broadcast` dihapus. Gunakan endpoint `/sessions/*`.
-- UI demo pindah dari `/` ke `/demo`. `GET /` sekarang hanya info service JSON.
+- `GET /` tetap info service JSON; UI pindah ke `/app`.
 - Auth pindah dari folder `data/auth/` ke SQLite, sekarang satu file `DB_PATH` (default `data/app.db`). `AUTH_DB_PATH`/`APP_DB_PATH` dihapus; sesi lama perlu pairing ulang.
 - Runtime minimal Node.js 24 karena memakai `node:sqlite`.
 - Server tidak lagi otomatis login saat tanpa sesi; buat sesi lewat `POST /sessions`.

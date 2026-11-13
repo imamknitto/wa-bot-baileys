@@ -1,27 +1,18 @@
 {
-  "name": "wa-bot-service",
-  "type": "module",
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js"
-  },
-  "dependencies": {
-    "@hono/node-server": "^2.1.4",
-    "@whiskeysockets/baileys": "^7.0.0-rc14",
-    "hono": "5.0.0-rc.1",
-    "qrcode": "^1.5.4",
-    "zod": "^4.6.7"
-  },
-  "devDependencies": {
-    "@hono/cli": "^1.0.0-rc.8",
-    "@types/node": "^26.1.1",
-    "@types/qrcode": "^1.5.6",
-    "tsx": "^4.23.0",
-    "typescript": "^7.0.2"
-  },
+  "name": "wa-bot-platform",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
   "engines": {
     "node": ">=24"
   },
-  "version": "1.0.0"
+  "scripts": {
+    "dev": "pnpm --parallel --filter ./packages/api --filter ./packages/web dev",
+    "dev:api": "pnpm --filter ./packages/api dev",
+    "dev:web": "pnpm --filter ./packages/web dev",
+    "build": "pnpm -r build",
+    "start": "pnpm --filter ./packages/api start",
+    "smoke": "pnpm --filter ./packages/api smoke",
+    "smoke:http": "pnpm --filter ./packages/api smoke:http",
+    "smoke:migrate": "pnpm --filter ./packages/api smoke:migrate"
+  }
 }
