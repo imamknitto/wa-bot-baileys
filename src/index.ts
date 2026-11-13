@@ -3,6 +3,7 @@ import app from './app.js'
 import * as scheduler from './broadcast/scheduler.js'
 import { getConfig, type Config } from './config.js'
 import { initAppDb } from './db/app.js'
+import * as webhook from './webhook/dispatcher.js'
 import { restoreSessions } from './wa/manager.js'
 
 function loadConfigOrExit(): Config {
@@ -46,8 +47,12 @@ serve(
 )
 
 restoreSessions()
-  .then(() => scheduler.start())
+  .then(() => {
+    scheduler.start()
+    webhook.start()
+  })
   .catch((err) => {
     console.error('Failed to restore WhatsApp sessions:', err)
     scheduler.start()
+    webhook.start()
   })

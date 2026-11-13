@@ -8,7 +8,7 @@ import {
   getJob,
   getRunningJobView,
 } from '../broadcast/scheduler.js'
-import { getCustomersByIds } from '../db/app.js'
+import { findJobByReference } from '../broadcast/store.js'
 import {
   SessionNotFoundError,
   WaNotConnectedError,
@@ -41,39 +41,54 @@ app.post('/:id/broadcast', async (c) => {
     )
   }
 
-  const customerIds = [...new Set(parsed.data.customerIds ?? [])]
-  const customers = getCustomersByIds(customerIds)
-  if (customers.length !== customerIds.length) {
-    return c.json({ error: 'Customer not found' }, 400)
+  const { text, delayMinMs, delayMaxMs, referenceId } = parsed.data
+  const sessionId = id.data
+
+  if (referenceId) {
+    const existingJobId = findJobByReference(sessionId, referenceId)
+    if (existingJobId) {
+      const job = getJob(sessionId, existingJobId)
+      return c.json(
+        {
+          ok: true,
+          jobId: existingJobId,
+          referenceId,
+          duplicate: true,
+          status: job?.status ?? null,
+        },
+        202,
+      )
+    }
   }
 
-  const byId = new Map(customers.map((customer) => [customer.id, customer]))
   const seen = new Set<string>()
-  const recipients: { to: string; text: string }[] = []
-  const addRecipient = (to: string, name: string | null) => {
-    const jid = toJid(to)
-    if (seen.has(jid)) return
+  const recipients: {
+    to: string
+    text: string
+    customerRef: string | null
+    recipientName: string | null
+  }[] = []
+  for (const recipient of parsed.data.recipients) {
+    const jid = toJid(recipient.to)
+    if (seen.has(jid)) continue
     seen.add(jid)
     recipients.push({
       to: jid,
-      text: renderTemplate(parsed.data.text, name),
+      text: recipient.text ?? text,
+      customerRef: recipient.customerId ?? null,
+      recipientName: recipient.name ?? null,
     })
   }
-
-  for (const customerId of customerIds) {
-    const customer = byId.get(customerId)
-    if (customer) addRecipient(customer.phone, customer.name)
-  }
-  for (const to of parsed.data.recipients ?? []) addRecipient(to, null)
 
   try {
-    const job = createJob(id.data, {
+    const job = createJob(sessionId, {
       recipients,
-      text: parsed.data.text,
-      delayMinMs: parsed.data.delayMinMs,
-      delayMaxMs: parsed.data.delayMaxMs,
+      text,
+      delayMinMs,
+      delayMaxMs,
+      referenceId: referenceId ?? null,
     })
-    return c.json({ ok: true, jobId: job.jobId }, 202)
+    return c.json({ ok: true, jobId: job.jobId, referenceId: job.referenceId }, 202)
   } catch (err) {
     if (err instanceof SessionNotFoundError) {
       return c.json({ error: 'Session not found' }, 404)
@@ -84,18 +99,10 @@ app.post('/:id/broadcast', async (c) => {
     if (err instanceof BroadcastBusyError) {
       return c.json({ error: err.message }, 409)
     }
-    console.error(`[${id.data}] Failed to start broadcast:`, err)
+    console.error(`[${sessionId}] Failed to start broadcast:`, err)
     return c.json({ error: 'Failed to start broadcast' }, 500)
   }
 })
-
-function renderTemplate(text: string, name: string | null): string {
-  if (!text.includes('{nama}')) return text
-  return text
-    .replaceAll('{nama}', () => name ?? '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim()
-}
 
 app.get('/:id/broadcast/current', (c) => {
   const id = sessionIdSchema.safeParse(c.req.param('id'))

@@ -11,6 +11,8 @@ export type BroadcastJobStatus =
 export interface BroadcastRecipientInput {
   to: string;
   text: string;
+  customerRef?: string | null;
+  recipientName?: string | null;
 }
 
 export interface BroadcastInput {
@@ -18,10 +20,14 @@ export interface BroadcastInput {
   text: string;
   delayMinMs: number;
   delayMaxMs: number;
+  salesId?: string | null;
+  referenceId?: string | null;
 }
 
 export interface BroadcastResultView {
   to: string;
+  customerId: string | null;
+  customerName: string | null;
   ok: boolean;
   messageId?: string;
   error?: string;
@@ -39,13 +45,18 @@ export interface BroadcastJobView {
   createdAt: number;
   delayMinMs: number;
   delayMaxMs: number;
+  referenceId: string | null;
+  error: string | null;
 }
 
 export interface RunningJob {
   jobId: string;
+  sessionId: string;
   text: string;
   delayMinMs: number;
   delayMaxMs: number;
+  salesId: string | null;
+  referenceId: string | null;
 }
 
 export interface DueRecipient {
@@ -53,6 +64,8 @@ export interface DueRecipient {
   position: number;
   toJid: string;
   text: string | null;
+  customerRef: string | null;
+  recipientName: string | null;
 }
 
 export class BroadcastBusyError extends Error {
@@ -73,6 +86,35 @@ function randomDelay(minMs: number, maxMs: number): number {
   return minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
 }
 
+export type JobFinishedHandler = (jobId: string) => void;
+
+const finishedQueue: string[] = [];
+
+export function setJobFinishedHandler(
+  handler: JobFinishedHandler | null,
+): void {
+  finishedQueue.length = 0;
+  pendingHandler = handler;
+}
+
+let pendingHandler: JobFinishedHandler | null = null;
+
+/**
+ * Completion happens inside SQLite transactions, so notifications are queued
+ * and drained by the scheduler after the transaction has been committed.
+ */
+export function drainFinishedJobs(): string[] {
+  const jobIds = finishedQueue.splice(0, finishedQueue.length);
+  if (pendingHandler) {
+    for (const jobId of jobIds) pendingHandler(jobId);
+  }
+  return jobIds;
+}
+
+function notifyJobFinished(jobId: string): void {
+  finishedQueue.push(jobId);
+}
+
 function completeJobIfDone(db: Db, jobId: string): boolean {
   const remaining = db
     .prepare(
@@ -83,17 +125,31 @@ function completeJobIfDone(db: Db, jobId: string): boolean {
     .get(jobId);
   if (remaining) return false;
 
-  db.prepare(
-    `UPDATE broadcast_jobs
-     SET status = 'completed', next_send_at = NULL, finished_at = ?
-     WHERE id = ? AND status = 'running'`,
-  ).run(Date.now(), jobId);
+  const result = db
+    .prepare(
+      `UPDATE broadcast_jobs
+       SET status = 'completed', next_send_at = NULL, finished_at = ?
+       WHERE id = ? AND status = 'running'`,
+    )
+    .run(Date.now(), jobId);
+  if (Number(result.changes) === 0) return false;
+  notifyJobFinished(jobId);
   return true;
 }
 
 export function createJob(sessionId: string, input: BroadcastInput): string {
   const db = getAppDb();
   return transaction(db, () => {
+    if (input.referenceId) {
+      const existing = db
+        .prepare(
+          `SELECT id FROM broadcast_jobs
+           WHERE session_id = ? AND reference_id = ?`,
+        )
+        .get(sessionId, input.referenceId);
+      if (existing) return String(existing.id);
+    }
+
     const running = db
       .prepare(
         `SELECT id FROM broadcast_jobs
@@ -108,8 +164,8 @@ export function createJob(sessionId: string, input: BroadcastInput): string {
     db.prepare(
       `INSERT INTO broadcast_jobs (
         id, session_id, text, delay_min_ms, delay_max_ms, status, total,
-        next_send_at, error, created_at, finished_at
-      ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, NULL, ?, NULL)`,
+        next_send_at, error, created_at, finished_at, reference_id
+      ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, NULL, ?, NULL, ?)`,
     ).run(
       jobId,
       sessionId,
@@ -119,12 +175,14 @@ export function createJob(sessionId: string, input: BroadcastInput): string {
       input.recipients.length,
       now,
       now,
+      input.referenceId ?? null,
     );
 
     const insertRecipient = db.prepare(
       `INSERT INTO broadcast_recipients (
-        job_id, position, to_jid, text, status, scheduled_at, created_at
-      ) VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+        job_id, position, to_jid, text, status, scheduled_at, created_at,
+        customer_ref, recipient_name, sales_id
+      ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
     );
     for (const [position, recipient] of input.recipients.entries()) {
       insertRecipient.run(
@@ -134,6 +192,9 @@ export function createJob(sessionId: string, input: BroadcastInput): string {
         recipient.text,
         position === 0 ? now : null,
         now,
+        recipient.customerRef ?? null,
+        recipient.recipientName ?? null,
+        input.salesId ?? null,
       );
     }
 
@@ -141,19 +202,35 @@ export function createJob(sessionId: string, input: BroadcastInput): string {
   });
 }
 
+export function findJobByReference(
+  sessionId: string,
+  referenceId: string,
+): string | null {
+  const row = getAppDb()
+    .prepare(
+      `SELECT id FROM broadcast_jobs WHERE session_id = ? AND reference_id = ?`,
+    )
+    .get(sessionId, referenceId);
+  return row ? String(row.id) : null;
+}
+
 export function getRunningJob(sessionId: string): RunningJob | null {
   const row = getAppDb()
     .prepare(
-      `SELECT id, text, delay_min_ms, delay_max_ms FROM broadcast_jobs
+      `SELECT id, text, delay_min_ms, delay_max_ms, sales_id, reference_id
+       FROM broadcast_jobs
        WHERE session_id = ? AND status = 'running'`,
     )
     .get(sessionId);
   if (!row) return null;
   return {
     jobId: String(row.id),
+    sessionId,
     text: String(row.text),
     delayMinMs: Number(row.delay_min_ms),
     delayMaxMs: Number(row.delay_max_ms),
+    salesId: row.sales_id === null ? null : String(row.sales_id),
+    referenceId: row.reference_id === null ? null : String(row.reference_id),
   };
 }
 
@@ -165,6 +242,13 @@ export function listRunningJobs(): string[] {
     )
     .all()
     .map((row) => String(row.session_id));
+}
+
+export function getJobSessionId(jobId: string): string | null {
+  const row = getAppDb()
+    .prepare("SELECT session_id FROM broadcast_jobs WHERE id = ?")
+    .get(jobId);
+  return row ? String(row.session_id) : null;
 }
 
 export function getJobView(
@@ -193,7 +277,8 @@ export function getJobView(
 
   const results = db
     .prepare(
-      `SELECT to_jid, status, wa_message_id, error, sent_at
+      `SELECT to_jid, status, wa_message_id, error, sent_at,
+              customer_ref, recipient_name
        FROM broadcast_recipients
        WHERE job_id = ? AND status IN ('sent', 'failed')
        ORDER BY position`,
@@ -209,6 +294,9 @@ export function getJobView(
     nextSendAt: job.next_send_at === null ? null : Number(job.next_send_at),
     results: results.map((row) => ({
       to: String(row.to_jid),
+      customerId: row.customer_ref === null ? null : String(row.customer_ref),
+      customerName:
+        row.recipient_name === null ? null : String(row.recipient_name),
       ok: row.status === "sent",
       messageId:
         row.wa_message_id === null ? undefined : String(row.wa_message_id),
@@ -218,6 +306,8 @@ export function getJobView(
     createdAt: Number(job.created_at),
     delayMinMs: Number(job.delay_min_ms),
     delayMaxMs: Number(job.delay_max_ms),
+    referenceId: job.reference_id === null ? null : String(job.reference_id),
+    error: job.error === null ? null : String(job.error),
   };
 }
 
@@ -227,7 +317,8 @@ export function getNextDueRecipient(
 ): DueRecipient | null {
   const row = getAppDb()
     .prepare(
-      `SELECT id, position, to_jid, text FROM broadcast_recipients
+      `SELECT id, position, to_jid, text, customer_ref, recipient_name
+       FROM broadcast_recipients
        WHERE job_id = ? AND status = 'pending'
          AND scheduled_at IS NOT NULL AND scheduled_at <= ?
        ORDER BY position LIMIT 1`,
@@ -239,6 +330,9 @@ export function getNextDueRecipient(
     position: Number(row.position),
     toJid: String(row.to_jid),
     text: row.text === null ? null : String(row.text),
+    customerRef: row.customer_ref === null ? null : String(row.customer_ref),
+    recipientName:
+      row.recipient_name === null ? null : String(row.recipient_name),
   };
 }
 
@@ -377,13 +471,14 @@ export function cancelJob(
        WHERE job_id = ? AND status = 'pending'`,
     ).run(jobId);
   });
+  notifyJobFinished(jobId);
 
   return getJobView(sessionId, jobId);
 }
 
 export function failJob(jobId: string, reason: string): void {
   const db = getAppDb();
-  transaction(db, () => {
+  const changed = transaction(db, () => {
     const result = db
       .prepare(
         `UPDATE broadcast_jobs
@@ -391,12 +486,14 @@ export function failJob(jobId: string, reason: string): void {
          WHERE id = ? AND status = 'running'`,
       )
       .run(reason, Date.now(), jobId);
-    if (Number(result.changes) === 0) return;
+    if (Number(result.changes) === 0) return false;
     db.prepare(
       `UPDATE broadcast_recipients SET status = 'cancelled'
        WHERE job_id = ? AND status = 'pending'`,
     ).run(jobId);
+    return true;
   });
+  if (changed) notifyJobFinished(jobId);
 }
 
 export function failSessionJobs(sessionId: string, reason: string): void {

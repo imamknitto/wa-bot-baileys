@@ -1,9 +1,15 @@
 import { getConfig } from "../config.js";
 import {
+  getSessionMeta,
   purgeMessageLog,
   recordMessage,
   type MessageLogInput,
 } from "../db/app.js";
+import {
+  enqueueWebhook,
+  newEventId,
+  type BroadcastWebhookPayload,
+} from "../webhook/store.js";
 import {
   SessionNotFoundError,
   WaNotConnectedError,
@@ -17,8 +23,10 @@ import {
   BroadcastNotRunningError,
   cancelJob as cancelStoredJob,
   createJob as createStoredJob,
+  drainFinishedJobs,
   failJob,
   failSessionJobs,
+  getJobSessionId,
   getJobView,
   getNextDueRecipient,
   getRunningJob,
@@ -30,6 +38,7 @@ import {
   recoverInterrupted,
   rescheduleRunningJobs,
   scheduleNext,
+  setJobFinishedHandler,
   completeIfDone,
   type BroadcastInput,
   type BroadcastJobView,
@@ -66,12 +75,52 @@ function purge(): void {
   }
 }
 
+function emitJobEvent(jobId: string): void {
+  const sessionId = getJobSessionId(jobId);
+  if (!sessionId) return;
+  const job = getJobView(sessionId, jobId);
+  if (!job) return;
+  if (job.status !== "completed" && job.status !== "failed" && job.status !== "cancelled") {
+    return;
+  }
+
+  const meta = getSessionMeta(sessionId);
+  const payload: BroadcastWebhookPayload = {
+    eventId: newEventId(),
+    type: `broadcast.${job.status}`,
+    occurredAt: Date.now(),
+    salesId: meta?.salesId ?? null,
+    agentId: meta?.agentId ?? null,
+    sessionId,
+    referenceId: job.referenceId,
+    jobId: job.jobId,
+    status: job.status,
+    total: job.total,
+    sent: job.sent,
+    failed: job.failed,
+    results: job.results.map((result) => ({
+      customerId: result.customerId,
+      customerName: result.customerName,
+      to: result.to,
+      ok: result.ok,
+      ...(result.messageId === undefined ? {} : { messageId: result.messageId }),
+      ...(result.error === undefined ? {} : { error: result.error }),
+      sentAt: result.sentAt,
+    })),
+    ...(job.error === null ? {} : { error: job.error }),
+  };
+  enqueueWebhook(payload.type, sessionId, payload);
+}
+
 export function initialize(): void {
-  recoverInterrupted();
-  rescheduleRunningJobs();
+  setJobFinishedHandler(emitJobEvent);
   setSessionDownHandler((sessionId, reason) => {
     failSessionJobs(sessionId, reason);
+    drainFinishedJobs();
   });
+  recoverInterrupted();
+  rescheduleRunningJobs();
+  drainFinishedJobs();
 }
 
 export function start(): void {
@@ -98,11 +147,13 @@ export function createJob(
   if (!session) throw new SessionNotFoundError(sessionId);
   if (!session.connected) throw new WaNotConnectedError();
 
+  const meta = getSessionMeta(sessionId);
   const jobId = createStoredJob(sessionId, {
     ...input,
+    salesId: meta?.salesId ?? null,
     recipients: input.recipients.map((recipient) => ({
+      ...recipient,
       to: toJid(recipient.to),
-      text: recipient.text,
     })),
   });
 
@@ -134,46 +185,53 @@ export function cancelJob(
   sessionId: string,
   jobId: string,
 ): BroadcastJobView | null {
-  return cancelStoredJob(sessionId, jobId);
+  const job = cancelStoredJob(sessionId, jobId);
+  drainFinishedJobs();
+  return job;
 }
 
 async function sendRecipient(
   sessionId: string,
   job: RunningJob,
-  recipient: { id: number; position: number; toJid: string; text: string | null },
+  recipient: {
+    id: number;
+    position: number;
+    toJid: string;
+    text: string | null;
+    customerRef: string | null;
+    recipientName: string | null;
+  },
 ): Promise<void> {
   const text = recipient.text ?? job.text;
+  const meta = getSessionMeta(sessionId);
+  const baseLog = {
+    sessionId,
+    source: "broadcast" as const,
+    toJid: recipient.toJid,
+    text,
+    broadcastJobId: job.jobId,
+    salesId: meta?.salesId ?? job.salesId,
+    agentId: meta?.agentId ?? null,
+    customerRef: recipient.customerRef,
+    recipientName: recipient.recipientName,
+  };
   try {
     const messageId = await sendText(sessionId, recipient.toJid, text);
     markSent(recipient.id, job.jobId, messageId);
-    logMessage({
-      sessionId,
-      source: "broadcast",
-      toJid: recipient.toJid,
-      text,
-      broadcastJobId: job.jobId,
-      waMessageId: messageId,
-      status: "sent",
-    });
+    logMessage({ ...baseLog, waMessageId: messageId, status: "sent" });
   } catch (err) {
     const message = err instanceof Error ? err.message : "send failed";
     markFailed(recipient.id, job.jobId, message);
-    logMessage({
-      sessionId,
-      source: "broadcast",
-      toJid: recipient.toJid,
-      text,
-      broadcastJobId: job.jobId,
-      status: "failed",
-      error: message,
-    });
+    logMessage({ ...baseLog, status: "failed", error: message });
     if (err instanceof WaNotConnectedError) {
       failJob(job.jobId, "WhatsApp disconnected");
+      drainFinishedJobs();
       return;
     }
   }
 
   scheduleNext(job.jobId, recipient.position, job.delayMinMs, job.delayMaxMs);
+  drainFinishedJobs();
 }
 
 async function pump(sessionId: string): Promise<void> {
@@ -186,13 +244,17 @@ async function pump(sessionId: string): Promise<void> {
     const session = getSessionView(sessionId);
     if (!session || session.status === "logged_out") {
       failJob(job.jobId, "Session is not available");
+      drainFinishedJobs();
       return;
     }
     if (!session.connected) return;
 
     const recipient = getNextDueRecipient(job.jobId, Date.now());
     if (!recipient) {
-      if (!hasPending(job.jobId)) completeIfDone(job.jobId);
+      if (!hasPending(job.jobId)) {
+        completeIfDone(job.jobId);
+        drainFinishedJobs();
+      }
       return;
     }
 

@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { countCustomers, countMessages } from '../db/app.js'
+import { countMessages } from '../db/app.js'
 import { listSessions } from '../wa/manager.js'
 
 const app = new Hono()
@@ -12,7 +12,6 @@ app.get('/', (c) => {
       connected: sessions.filter((session) => session.connected).length,
     },
     messages: countMessages(),
-    customers: countCustomers(),
   })
 })
 

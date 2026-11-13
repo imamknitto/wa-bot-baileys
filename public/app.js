@@ -1,30 +1,27 @@
 const $ = (id) => document.getElementById(id)
 
 const KEY_STORAGE = 'apiKey'
+const TOKEN_STORAGE = 'sessionToken'
 const DELAY_STORAGE = 'broadcastDelay'
 
 const apiKeyInput = $('apiKey')
+const sessionTokenInput = $('sessionToken')
 const serviceMeta = $('serviceMeta')
 const sessionList = $('sessionList')
-const customerList = $('customerList')
-const customerSearch = $('customerSearch')
-const loadMoreBtn = $('loadMoreCustomers')
+const recipientNameInput = $('recipientName')
+const recipientPhoneInput = $('recipientPhone')
+const addRecipientBtn = $('addRecipientBtn')
+const recipientError = $('recipientError')
 const sessionForm = $('sessionForm')
 const sessionDialog = $('sessionDialog')
 const sessionIdInput = $('sessionId')
+const sessionSalesIdInput = $('sessionSalesId')
+const sessionAgentIdInput = $('sessionAgentId')
 const sessionModeSelect = $('sessionMode')
 const sessionPhoneInput = $('sessionPhone')
 const phoneField = $('phoneField')
 const createSessionBtn = $('createSessionBtn')
 const sessionError = $('sessionError')
-const customerForm = $('customerForm')
-const customerDialog = $('customerDialog')
-const customerDialogTitle = $('customerDialogTitle')
-const customerNameInput = $('customerName')
-const customerPhoneInput = $('customerPhone')
-const customerNoteInput = $('customerNote')
-const customerError = $('customerError')
-const saveCustomerBtn = $('saveCustomerBtn')
 const broadcastForm = $('broadcastForm')
 const broadcastText = $('broadcastText')
 const broadcastBtn = $('broadcastBtn')
@@ -51,9 +48,7 @@ const sessionPageMissing = $('sessionPageMissing')
 const sessionPageTitle = $('sessionPageTitle')
 const sessionPageMeta = $('sessionPageMeta')
 const sessionPageStatus = $('sessionPageStatus')
-const recipientSearch = $('recipientSearch')
 const recipientList = $('recipientList')
-const loadMoreRecipientsBtn = $('loadMoreRecipients')
 const recipientsCount = $('recipientsCount')
 const sessionHistoryList = $('sessionHistoryList')
 const composerModeHint = $('composerModeHint')
@@ -71,16 +66,7 @@ const state = {
   sessionsLoaded: false,
   sessionsSignature: '',
   sessionsLoading: false,
-  customers: [],
-  customersLoading: false,
-  customerCursor: null,
-  customerQuery: '',
   recipients: new Map(),
-  sessionCustomers: [],
-  sessionCustomersLoading: false,
-  sessionCustomerCursor: null,
-  sessionCustomerQuery: '',
-  editingCustomerId: null,
   activeJob: null,
   lastJob: null,
   jobPolling: false,
@@ -96,7 +82,6 @@ const state = {
 const qrCache = new Map()
 let jobPollTimer = null
 let countdownTimer = null
-let searchTimer = null
 
 /* ---------- helpers ---------- */
 
@@ -134,9 +119,7 @@ function phoneFromJid(jid) {
 }
 
 function customerNameForJid(jid) {
-  const phone = phoneFromJid(jid)
-  const found = state.customers.find((customer) => customer.phone === phone)
-  return found ? found.name : `+${phone}`
+  return `+${phoneFromJid(jid)}`
 }
 
 function formatNumber(value) {
@@ -187,10 +170,12 @@ function errorText(res, body) {
 }
 
 async function api(path, options = {}) {
+  const token = sessionTokenInput.value.trim()
   const res = await fetch(path, {
     ...options,
     headers: {
       'x-api-key': apiKeyInput.value.trim(),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(options.headers ?? {}),
     },
   })
@@ -255,7 +240,7 @@ async function refreshStats() {
         : `${total - active} sesi belum tertaut`
 
   $('statMessages').textContent = formatNumber(body.messages.total)
-  $('statMessagesHint').textContent = `${formatNumber(body.messages.today)} hari ini · ${formatNumber(body.customers)} customer`
+  $('statMessagesHint').textContent = `${formatNumber(body.messages.today)} hari ini`
 }
 
 /* ---------- delay ---------- */
@@ -406,6 +391,17 @@ function renderSessionCard(session) {
           : 'Menunggu kode pairing',
     }),
   )
+
+  if (session.salesId) {
+    card.append(
+      el('p', {
+        class: 'hint',
+        text: session.agentId
+          ? `Sales ${session.salesId} · Agent ${session.agentId}`
+          : `Sales ${session.salesId}`,
+      }),
+    )
+  }
 
   if (session.status === 'connecting') {
     if (session.mode === 'pairing') {
@@ -630,11 +626,8 @@ function applyRoute() {
   sessionPage.classList.toggle('hidden', !onSession)
 
   if (onSession) {
-    state.sessionCustomerQuery = ''
-    state.sessionCustomerCursor = null
-    recipientSearch.value = ''
     state.sessionHistorySignature = ''
-    void loadSessionCustomers()
+    renderRecipients()
     void refreshSessionHistory()
     syncJobCard()
     void resumeJobTracking(state.route.sessionId)
@@ -683,99 +676,93 @@ function currentRecipients() {
   return map
 }
 
-async function loadSessionCustomers(append = false) {
-  if (state.sessionCustomersLoading) return
-  state.sessionCustomersLoading = true
-  try {
-    const params = new URLSearchParams({ limit: '50' })
-    if (state.sessionCustomerQuery) params.set('q', state.sessionCustomerQuery)
-    if (append && state.sessionCustomerCursor) {
-      params.set('cursor', String(state.sessionCustomerCursor))
-    }
-
-    const { res, body } = await api(`/customers?${params.toString()}`)
-    if (!res.ok) return
-
-    const rows = Array.isArray(body.customers) ? body.customers : []
-    state.sessionCustomers = append ? [...state.sessionCustomers, ...rows] : rows
-    state.sessionCustomerCursor = body.nextCursor ?? null
-
-    renderRecipients()
-  } catch {
-    // keep previous list on network errors
-  } finally {
-    state.sessionCustomersLoading = false
-  }
-}
-
 function renderRecipients() {
   if (state.route.name !== 'session') return
   recipientList.textContent = ''
 
-  const suffix = state.sessionCustomerCursor ? '+' : ''
-  recipientsCount.textContent = state.sessionCustomerQuery
-    ? `${state.sessionCustomers.length} hasil untuk “${state.sessionCustomerQuery}”`
-    : `${state.sessionCustomers.length}${suffix} customer terdaftar`
+  const selected = currentRecipients()
+  recipientsCount.textContent = `${selected.size} penerima ditambahkan`
 
-  if (state.sessionCustomers.length === 0) {
+  if (selected.size === 0) {
     recipientList.append(
       el('p', {
         class: 'empty',
-        text: state.sessionCustomerQuery
-          ? 'Customer tidak ditemukan.'
-          : 'Belum ada customer. Tambahkan dulu di dashboard.',
+        text: 'Belum ada penerima. Tambahkan nama dan nomor WhatsApp di atas.',
       }),
     )
+    return
   }
 
-  const selected = currentRecipients()
-  for (const customer of state.sessionCustomers) {
-    recipientList.append(renderRecipientItem(customer, selected))
+  for (const recipient of selected.values()) {
+    recipientList.append(renderRecipientItem(recipient, selected))
   }
-
-  loadMoreRecipientsBtn.classList.toggle('hidden', !state.sessionCustomerCursor)
 }
 
-function renderRecipientItem(customer, selected) {
-  const item = el('div', {
-    class: `customer-item${selected.has(customer.id) ? ' selected' : ''}`,
-  })
+function renderRecipientItem(recipient, selected) {
+  const key = digitsOnly(recipient.phone)
+  const item = el('div', { class: 'customer-item selected' })
 
-  const checkbox = el('input', {
-    attrs: {
-      type: 'checkbox',
-      'aria-label': `Pilih ${customer.name}`,
-    },
-  })
-  checkbox.checked = selected.has(customer.id)
-  checkbox.addEventListener('change', () => {
-    if (checkbox.checked) {
-      if (state.sendMode === 'single') {
-        selected.clear()
-        manualPhoneInput.value = customer.phone
-      }
-      selected.set(customer.id, customer)
-    } else {
-      selected.delete(customer.id)
-    }
-    for (const node of recipientList.querySelectorAll('.customer-item')) {
-      const input = node.querySelector('input[type="checkbox"]')
-      if (!input) continue
-      node.classList.toggle('selected', input.checked)
-    }
-    renderSelection()
-  })
   const main = el('div', { class: 'customer-main' }, [
-    el('div', { class: 'customer-name', text: customer.name }),
-    el('div', { class: 'customer-phone', text: `+${customer.phone}` }),
-    customer.note
-      ? el('div', { class: 'customer-note', text: customer.note, title: customer.note })
-      : null,
+    el('div', { class: 'customer-name', text: recipient.name || `+${key}` }),
+    el('div', { class: 'customer-phone', text: `+${key}` }),
   ])
 
-  item.append(checkbox, main)
+  const actions = el('div', { class: 'customer-actions' }, [
+    el('button', {
+      class: 'icon-btn',
+      type: 'button',
+      text: '×',
+      title: 'Hapus penerima',
+      attrs: { 'aria-label': `Hapus ${recipient.name || key}` },
+      on: {
+        click: () => {
+          selected.delete(key)
+          renderRecipients()
+          renderSelection()
+        },
+      },
+    }),
+  ])
+
+  item.append(main, actions)
   return item
 }
+
+function showRecipientError(message) {
+  recipientError.textContent = message ?? ''
+  recipientError.classList.toggle('hidden', !message)
+}
+
+function addRecipientFromForm() {
+  const name = recipientNameInput.value.trim()
+  const phone = digitsOnly(recipientPhoneInput.value)
+
+  if (phone.length < 8 || phone.length > 15) {
+    showRecipientError('Nomor WhatsApp harus 8–15 digit.')
+    return
+  }
+  const selected = currentRecipients()
+  if (!selected.has(phone) && selected.size >= 100) {
+    showRecipientError('Maksimal 100 penerima per broadcast.')
+    return
+  }
+
+  selected.set(phone, { name, phone })
+  showRecipientError('')
+  recipientNameInput.value = ''
+  recipientPhoneInput.value = ''
+  recipientNameInput.focus()
+  renderRecipients()
+  renderSelection()
+}
+
+addRecipientBtn.addEventListener('click', addRecipientFromForm)
+
+recipientPhoneInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return
+  event.preventDefault()
+  addRecipientFromForm()
+})
 
 function isJobVisible() {
   return (
@@ -807,108 +794,21 @@ async function resumeJobTracking(sessionId) {
 
 /* ---------- customers ---------- */
 
-async function loadCustomers(append = false) {
-  if (state.customersLoading) return
-  state.customersLoading = true
-  try {
-    const params = new URLSearchParams({ limit: '50' })
-    if (state.customerQuery) params.set('q', state.customerQuery)
-    if (append && state.customerCursor) {
-      params.set('cursor', String(state.customerCursor))
-    }
-
-    const { res, body } = await api(`/customers?${params.toString()}`)
-    if (!res.ok) return
-
-    const rows = Array.isArray(body.customers) ? body.customers : []
-    state.customers = append ? [...state.customers, ...rows] : rows
-    state.customerCursor = body.nextCursor ?? null
-
-    for (const customer of rows) {
-      for (const map of state.recipients.values()) {
-        if (map.has(customer.id)) map.set(customer.id, customer)
-      }
-    }
-
-    renderCustomers()
-    renderRecipients()
-  } catch {
-    // keep previous list on network errors
-  } finally {
-    state.customersLoading = false
-  }
-}
-
-function renderCustomers() {
-  customerList.textContent = ''
-
-  const suffix = state.customerCursor ? '+' : ''
-  $('customerCount').textContent = state.customerQuery
-    ? `${state.customers.length} hasil untuk “${state.customerQuery}”`
-    : `${state.customers.length}${suffix} customer terdaftar`
-
-  if (state.customers.length === 0) {
-    customerList.append(
-      el('p', {
-        class: 'empty',
-        text: state.customerQuery
-          ? 'Customer tidak ditemukan.'
-          : 'Belum ada customer. Tambahkan nomor WhatsApp customer dulu.',
-      }),
-    )
-  }
-
-  for (const customer of state.customers) {
-    customerList.append(renderCustomerItem(customer))
-  }
-
-  loadMoreBtn.classList.toggle('hidden', !state.customerCursor)
-}
-
-function renderCustomerItem(customer) {
-  const item = el('div', { class: 'customer-item' })
-
-  const main = el('div', { class: 'customer-main' }, [
-    el('div', { class: 'customer-name', text: customer.name }),
-    el('div', { class: 'customer-phone', text: `+${customer.phone}` }),
-    customer.note
-      ? el('div', { class: 'customer-note', text: customer.note, title: customer.note })
-      : null,
-  ])
-
-  const actions = el('div', { class: 'customer-actions' }, [
-    el('button', {
-      class: 'icon-btn',
-      type: 'button',
-      text: '✎',
-      title: 'Edit customer',
-      attrs: { 'aria-label': `Edit ${customer.name}` },
-      on: { click: () => openCustomerEditor(customer) },
-    }),
-    el('button', {
-      class: 'icon-btn',
-      type: 'button',
-      text: '🗑',
-      title: 'Hapus customer',
-      attrs: { 'aria-label': `Hapus ${customer.name}` },
-      on: { click: () => removeCustomer(customer) },
-    }),
-  ])
-
-  item.append(main, actions)
-  return item
-}
-
 function renderSelection() {
   if (state.route.name !== 'session') return
 
   const chosen = [...currentRecipients().values()]
   const count = chosen.length
-  selectedCountEl.textContent = `${count} customer`
+  selectedCountEl.textContent = `${count} penerima`
   selectedChipsEl.textContent = ''
 
-  for (const customer of chosen.slice(0, 4)) {
-    selectedChipsEl.append(el('span', { class: 'chip', text: customer.name }))
+  for (const recipient of chosen.slice(0, 4)) {
+    selectedChipsEl.append(
+      el('span', {
+        class: 'chip',
+        text: recipient.name || `+${digitsOnly(recipient.phone)}`,
+      }),
+    )
   }
   if (count > 4) {
     selectedChipsEl.append(
@@ -918,93 +818,6 @@ function renderSelection() {
 
   updateComposer()
 }
-
-function openCustomerEditor(customer = null) {
-  state.editingCustomerId = customer ? customer.id : null
-  customerDialogTitle.textContent = customer ? 'Edit Customer' : 'Tambah Customer'
-  customerNameInput.value = customer?.name ?? ''
-  customerPhoneInput.value = customer?.phone ?? ''
-  customerNoteInput.value = customer?.note ?? ''
-  customerError.classList.add('hidden')
-  customerError.textContent = ''
-  openDialog(customerDialog)
-  customerNameInput.focus()
-}
-
-async function removeCustomer(customer) {
-  if (!confirm(`Hapus customer "${customer.name}"?`)) return
-
-  const { res, body } = await api(`/customers/${customer.id}`, {
-    method: 'DELETE',
-  })
-  if (!res.ok) {
-    alert(errorText(res, body))
-    return
-  }
-
-  state.recipients.forEach((map) => map.delete(customer.id))
-  await loadCustomers()
-  await refreshStats()
-  renderSelection()
-}
-
-function showCustomerError(message) {
-  customerError.textContent = message
-  customerError.classList.toggle('hidden', !message)
-}
-
-customerForm.addEventListener('submit', async (event) => {
-  event.preventDefault()
-
-  const name = customerNameInput.value.trim()
-  const phone = digitsOnly(customerPhoneInput.value)
-  const note = customerNoteInput.value.trim()
-
-  if (!name) return showCustomerError('Nama customer wajib diisi.')
-  if (phone.length < 8 || phone.length > 15) {
-    return showCustomerError('Nomor WhatsApp harus 8–15 digit.')
-  }
-
-  saveCustomerBtn.disabled = true
-  showCustomerError('')
-  try {
-    const payload = { name, phone, note: note || null }
-    const path = state.editingCustomerId
-      ? `/customers/${state.editingCustomerId}`
-      : '/customers'
-    const { res, body } = await api(path, {
-      method: state.editingCustomerId ? 'PATCH' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-
-    if (!res.ok) {
-      showCustomerError(
-        res.status === 409
-          ? 'Nomor ini sudah terdaftar sebagai customer.'
-          : errorText(res, body),
-      )
-      return
-    }
-
-    closeDialog(customerDialog)
-    await loadCustomers()
-    await refreshStats()
-  } finally {
-    saveCustomerBtn.disabled = false
-  }
-})
-
-customerSearch.addEventListener('input', () => {
-  clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => {
-    state.customerQuery = customerSearch.value.trim()
-    state.customerCursor = null
-    loadCustomers()
-  }, 250)
-})
-
-loadMoreBtn.addEventListener('click', () => loadCustomers(true))
 
 /* ---------- session dialog ---------- */
 
@@ -1019,11 +832,13 @@ sessionModeSelect.addEventListener('change', updateModeUi)
 sessionForm.addEventListener('submit', async (event) => {
   event.preventDefault()
 
+  const salesId = sessionSalesIdInput.value.trim()
+  const agentId = sessionAgentIdInput.value.trim()
   const sessionId = sessionIdInput.value.trim()
   const mode = sessionModeSelect.value
   const phone = digitsOnly(sessionPhoneInput.value)
 
-  if (!sessionId) return showSessionError('Session ID wajib diisi.')
+  if (!salesId) return showSessionError('Sales ID wajib diisi.')
   if (mode === 'pairing' && (phone.length < 8 || phone.length > 15)) {
     return showSessionError('Nomor WhatsApp harus 8–15 digit.')
   }
@@ -1035,7 +850,9 @@ sessionForm.addEventListener('submit', async (event) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        sessionId,
+        salesId,
+        ...(agentId ? { agentId } : {}),
+        ...(sessionId ? { sessionId } : {}),
         mode,
         ...(mode === 'pairing' ? { phone } : {}),
       }),
@@ -1050,10 +867,18 @@ sessionForm.addEventListener('submit', async (event) => {
       return
     }
 
+    if (typeof body.token === 'string') {
+      sessionTokenInput.value = body.token
+      localStorage.setItem(TOKEN_STORAGE, body.token)
+      alert(
+        `Token sesi ${body.sessionId}:\n\n${body.token}\n\nSimpan sekarang — token hanya ditampilkan sekali.`,
+      )
+    }
+
     closeDialog(sessionDialog)
     sessionForm.reset()
     updateModeUi()
-    qrCache.delete(sessionId)
+    qrCache.delete(body.sessionId ?? sessionId)
     await refreshSessions()
     await refreshStats()
   } finally {
@@ -1088,12 +913,12 @@ function setSendMode(mode) {
 
   composerModeHint.textContent = single
     ? 'Masukkan nomor WhatsApp, lalu kirim langsung tanpa jeda.'
-    : 'Pilih beberapa customer, lalu kirim dengan delay acak sesuai preset.'
+    : 'Tambahkan penerima, lalu kirim dengan delay acak sesuai preset.'
 
   broadcastBtnLabel.textContent = single ? 'Kirim Pesan' : 'Kirim Broadcast'
   broadcastText.placeholder = single
     ? 'Tulis pesan…'
-    : 'Halo {nama}, ada promo khusus hari ini…'
+    : 'Halo, ada promo khusus hari ini…'
   templateHint.classList.toggle('hidden', single)
   showBroadcastError('')
   if (state.route.name === 'session') renderRecipients()
@@ -1117,7 +942,7 @@ function updateComposer() {
         ? 'Kirim langsung ke 1 nomor, tanpa jeda.'
         : 'Masukkan nomor WhatsApp dulu.'
   } else if (count === 0) {
-    composerEstimate.textContent = 'Pilih customer dulu.'
+    composerEstimate.textContent = 'Tambahkan penerima dulu.'
   } else if (count === 1) {
     composerEstimate.textContent = '1 penerima · tanpa jeda awal.'
   } else {
@@ -1183,7 +1008,7 @@ broadcastForm.addEventListener('submit', async (event) => {
     }
   } else {
     if (currentRecipients().size === 0) {
-      return showBroadcastError('Pilih minimal satu customer.')
+      return showBroadcastError('Tambahkan minimal satu penerima.')
     }
     if (currentRecipients().size > 100) {
       return showBroadcastError('Maksimal 100 penerima per broadcast.')
@@ -1225,7 +1050,10 @@ broadcastForm.addEventListener('submit', async (event) => {
       return
     }
 
-    const customerIds = [...currentRecipients().keys()]
+    const recipients = [...currentRecipients().values()].map((recipient) => ({
+      to: recipient.phone,
+      ...(recipient.name ? { name: recipient.name } : {}),
+    }))
     const { min, max } = state.delay
     const { res, body } = await api(
       `/sessions/${enc(sessionId)}/broadcast`,
@@ -1233,7 +1061,7 @@ broadcastForm.addEventListener('submit', async (event) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          customerIds,
+          recipients,
           text,
           delayMinMs: min * 1000,
           delayMaxMs: max * 1000,
@@ -1336,7 +1164,7 @@ function renderJob(job) {
   for (const result of shown) {
     jobResultsEl.append(
       el('li', {}, [
-        el('span', { text: customerNameForJid(result.to) }),
+        el('span', { text: result.customerName || customerNameForJid(result.to) }),
         el('span', {
           text: result.ok ? 'terkirim' : result.error ?? 'gagal',
           class: result.ok ? '' : 'error-text',
@@ -1518,24 +1346,13 @@ $('backToDashboard').addEventListener('click', () => {
 
 window.addEventListener('hashchange', applyRoute)
 
-recipientSearch.addEventListener('input', () => {
-  clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => {
-    state.sessionCustomerQuery = recipientSearch.value.trim()
-    state.sessionCustomerCursor = null
-    loadSessionCustomers()
-  }, 250)
-})
-
-loadMoreRecipientsBtn.addEventListener('click', () => loadSessionCustomers(true))
-
 /* ---------- global events ---------- */
 
 $('saveKey').addEventListener('click', () => {
   localStorage.setItem(KEY_STORAGE, apiKeyInput.value.trim())
+  localStorage.setItem(TOKEN_STORAGE, sessionTokenInput.value.trim())
   void refreshSessions()
   void refreshStats()
-  void loadCustomers()
   void refreshHistory()
 })
 
@@ -1546,9 +1363,15 @@ apiKeyInput.addEventListener('keydown', (event) => {
   }
 })
 
+sessionTokenInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    $('saveKey').click()
+  }
+})
+
 $('addSessionBtn').addEventListener('click', () => openDialog(sessionDialog))
 $('addSessionBtn2').addEventListener('click', () => openDialog(sessionDialog))
-$('addCustomerBtn').addEventListener('click', () => openCustomerEditor(null))
 
 for (const button of document.querySelectorAll('[data-close]')) {
   button.addEventListener('click', () => closeDialog(button.closest('dialog')))
@@ -1558,14 +1381,12 @@ for (const dialog of document.querySelectorAll('dialog')) {
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) closeDialog(dialog)
   })
-  dialog.addEventListener('close', () => {
-    if (dialog === customerDialog) state.editingCustomerId = null
-  })
 }
 
 /* ---------- init ---------- */
 
 apiKeyInput.value = localStorage.getItem(KEY_STORAGE) ?? ''
+sessionTokenInput.value = localStorage.getItem(TOKEN_STORAGE) ?? ''
 
 loadDelay()
 setDelay(state.delay.min, state.delay.max, false)
@@ -1576,7 +1397,6 @@ applyRoute()
 void refreshService()
 void refreshStats()
 void refreshSessions()
-void loadCustomers()
 void refreshHistory()
 
 setInterval(() => void refreshService(), 15000)

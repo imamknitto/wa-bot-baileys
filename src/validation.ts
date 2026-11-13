@@ -4,44 +4,15 @@ export const sessionIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,32}$/)
 
 export const jobIdSchema = z.string().uuid()
 
-export const customerIdSchema = z.coerce.number().int().positive()
-
 export const messageIdSchema = z.coerce.number().int().positive()
 
-export const customerNameSchema = z.string().trim().min(1).max(100)
+export const salesIdSchema = z.string().trim().min(1).max(64)
 
-export const customerPhoneSchema = z
-  .string()
-  .transform((value) => value.replace(/\D/g, ''))
-  .refine(
-    (value) => value.length >= 8 && value.length <= 15,
-    'phone must contain 8-15 digits',
-  )
+export const agentIdSchema = z.string().trim().min(1).max(64)
 
-export const customerNoteSchema = z.string().trim().max(500).nullable()
+export const externalIdSchema = z.string().trim().min(1).max(128)
 
-export const customerCreateSchema = z.object({
-  name: customerNameSchema,
-  phone: customerPhoneSchema,
-  note: customerNoteSchema.optional(),
-})
-
-export const customerUpdateSchema = z
-  .object({
-    name: customerNameSchema.optional(),
-    phone: customerPhoneSchema.optional(),
-    note: customerNoteSchema.optional(),
-  })
-  .refine(
-    (value) => Object.keys(value).length > 0,
-    'at least one field is required',
-  )
-
-export const customersQuerySchema = z.object({
-  q: z.string().trim().max(100).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.coerce.number().int().positive().optional(),
-})
+export const recipientNameSchema = z.string().trim().min(1).max(100)
 
 export const recentMessagesQuerySchema = z.object({
   sessionId: sessionIdSchema.optional(),
@@ -59,34 +30,28 @@ export const recipientSchema = z
 
 export const sendSchema = z.object({
   to: recipientSchema,
-  text: z.string().min(1),
+  text: z.string().min(1).max(4000),
+  customerId: externalIdSchema.optional(),
+  customerName: recipientNameSchema.optional(),
+  referenceId: externalIdSchema.optional(),
+})
+
+export const broadcastRecipientSchema = z.object({
+  to: recipientSchema,
+  customerId: externalIdSchema.optional(),
+  name: recipientNameSchema.optional(),
+  text: z.string().min(1).max(4000).optional(),
 })
 
 export const broadcastSchema = z
   .object({
-    recipients: z.array(recipientSchema).max(100).optional(),
-    customerIds: z.array(z.number().int().positive()).max(100).optional(),
+    recipients: z.array(broadcastRecipientSchema).min(1).max(100),
     text: z.string().min(1).max(4000),
     delayMinMs: z.number().int().min(10000).max(600000).default(30000),
     delayMaxMs: z.number().int().min(10000).max(600000).default(60000),
+    referenceId: externalIdSchema.optional(),
   })
   .superRefine((value, ctx) => {
-    const recipientCount = value.recipients?.length ?? 0
-    const customerCount = value.customerIds?.length ?? 0
-    if (recipientCount + customerCount === 0) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'recipients or customerIds is required',
-        path: ['recipients'],
-      })
-    }
-    if (recipientCount + customerCount > 100) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'total recipients must not exceed 100',
-        path: ['recipients'],
-      })
-    }
     if (value.delayMaxMs < value.delayMinMs) {
       ctx.addIssue({
         code: 'custom',
@@ -100,3 +65,27 @@ export const messagesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.coerce.number().int().positive().optional(),
 })
+
+export const createSessionSchema = z
+  .object({
+    sessionId: sessionIdSchema.optional(),
+    salesId: salesIdSchema,
+    agentId: agentIdSchema.optional(),
+    mode: z.enum(['pairing', 'qr']).default('pairing'),
+    phone: z.string().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.mode !== 'pairing') return
+    const digits = digitsOnly(value.phone ?? '')
+    if (digits.length < 8 || digits.length > 15) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'phone must contain 8-15 digits',
+        path: ['phone'],
+      })
+    }
+  })
+
+export function digitsOnly(value: string): string {
+  return value.replace(/\D/g, '')
+}

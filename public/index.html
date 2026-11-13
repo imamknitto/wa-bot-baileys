@@ -29,6 +29,15 @@
               Simpan
             </button>
           </div>
+          <div class="key-field">
+            <label class="sr-only" for="sessionToken">Token sesi sales</label>
+            <input
+              id="sessionToken"
+              type="password"
+              placeholder="Token sesi (opsional)"
+              autocomplete="off"
+            />
+          </div>
           <button id="addSessionBtn" class="btn primary" type="button">
             + Tambah Nomor
           </button>
@@ -136,30 +145,6 @@
       </section>
 
       <div class="columns" data-route="dashboard">
-        <section class="panel customers-panel" aria-labelledby="customerTitle">
-          <div class="panel-head">
-            <div>
-              <h2 id="customerTitle">Daftar Customer</h2>
-              <p class="hint" id="customerCount">Memuat…</p>
-            </div>
-            <button id="addCustomerBtn" class="btn primary small" type="button">
-              + Tambah Customer
-            </button>
-          </div>
-          <div class="search-row">
-            <label class="sr-only" for="customerSearch">Cari customer</label>
-            <input
-              id="customerSearch"
-              type="search"
-              placeholder="Cari nama atau nomor customer…"
-            />
-          </div>
-          <div id="customerList" class="customer-list"></div>
-          <button id="loadMoreCustomers" class="btn ghost small hidden" type="button">
-            Muat lebih banyak
-          </button>
-        </section>
-
         <section class="panel history-panel" aria-labelledby="historyTitle">
           <div class="panel-head">
             <div>
@@ -191,22 +176,34 @@
           <section class="panel recipients-panel" aria-labelledby="recipientsTitle">
             <div class="panel-head">
               <div>
-                <h2 id="recipientsTitle">Pilih Penerima</h2>
-                <p class="hint" id="recipientsCount">Memuat…</p>
+                <h2 id="recipientsTitle">Daftar Penerima</h2>
+                <p class="hint" id="recipientsCount">Belum ada penerima.</p>
               </div>
             </div>
-            <div class="search-row">
-              <label class="sr-only" for="recipientSearch">Cari penerima</label>
+            <div class="recipient-form">
+              <label class="sr-only" for="recipientName">Nama penerima</label>
               <input
-                id="recipientSearch"
-                type="search"
-                placeholder="Cari nama atau nomor customer…"
+                id="recipientName"
+                type="text"
+                placeholder="Nama penerima"
+                maxlength="100"
+                autocomplete="off"
               />
+              <label class="sr-only" for="recipientPhone">Nomor WhatsApp</label>
+              <input
+                id="recipientPhone"
+                type="text"
+                inputmode="numeric"
+                placeholder="6281234567890"
+                maxlength="15"
+                autocomplete="off"
+              />
+              <button id="addRecipientBtn" class="btn primary small" type="button">
+                + Tambah
+              </button>
             </div>
+            <p id="recipientError" class="error-text hidden" role="alert"></p>
             <div id="recipientList" class="customer-list"></div>
-            <button id="loadMoreRecipients" class="btn ghost small hidden" type="button">
-              Muat lebih banyak
-            </button>
           </section>
 
           <section class="panel composer" aria-labelledby="composerTitle">
@@ -214,7 +211,7 @@
               <div>
                 <h2 id="composerTitle">Kirim Pesan WhatsApp</h2>
                 <p class="hint" id="composerModeHint">
-                  Pilih satu customer, lalu kirim langsung tanpa jeda.
+                  Masukkan nomor penerima, lalu kirim langsung tanpa jeda.
                 </p>
               </div>
             </div>
@@ -242,12 +239,12 @@
 
             <form id="broadcastForm" autocomplete="off">
               <label id="selectedLabel">
-                Customer terpilih
-                <span id="selectedCount" class="selected-count">0 customer</span>
+                Penerima terpilih
+                <span id="selectedCount" class="selected-count">0 penerima</span>
               </label>
               <div id="selectedChips" class="selected-chips"></div>
 
-              <label id="manualLabel" for="manualPhone" class="hidden">
+              <label id="manualLabel" for="manualPhone">
                 Nomor WhatsApp penerima
                 <input
                   id="manualPhone"
@@ -264,10 +261,11 @@
                 id="broadcastText"
                 rows="4"
                 maxlength="4000"
-                placeholder="Halo {nama}, ada promo khusus hari ini…"
+                placeholder="Halo, ada promo khusus hari ini…"
               ></textarea>
               <p class="hint" id="templateHint">
-                Gunakan <code>{nama}</code> agar otomatis diganti nama customer.
+                Teks dikirim apa adanya. Render template (mis. nama penerima)
+                dilakukan oleh aplikasi remarketing sebelum memanggil API ini.
               </p>
 
               <div class="composer-meta">
@@ -318,13 +316,21 @@
             ×
           </button>
         </div>
-        <label for="sessionId">Session ID</label>
+        <label for="sessionSalesId">Sales ID</label>
+        <input
+          id="sessionSalesId"
+          placeholder="S-12"
+          maxlength="64"
+          required
+        />
+        <label for="sessionAgentId">Agent ID (opsional)</label>
+        <input id="sessionAgentId" placeholder="A-3" maxlength="64" />
+        <label for="sessionId">Session ID (opsional, default = Sales ID)</label>
         <input
           id="sessionId"
           placeholder="sales-1"
           pattern="[A-Za-z0-9_\-]{1,32}"
           maxlength="32"
-          required
         />
         <label for="sessionMode">Mode login</label>
         <select id="sessionMode">
@@ -337,42 +343,13 @@
         </div>
         <p class="hint">
           Session ID hanya huruf, angka, <code>_</code>, <code>-</code>; maks 32
-          karakter.
+          karakter. Token akses sesi dikembalikan sekali setelah sesi dibuat.
         </p>
         <p id="sessionError" class="error-text hidden" role="alert"></p>
         <div class="modal-actions">
           <button type="button" class="btn ghost" data-close>Batal</button>
           <button type="submit" id="createSessionBtn" class="btn primary">
             Tambah Sesi
-          </button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog id="customerDialog" class="modal">
-      <form id="customerForm" method="dialog">
-        <div class="modal-head">
-          <h2 id="customerDialogTitle">Tambah Customer</h2>
-          <button type="button" class="icon-btn" data-close aria-label="Tutup">
-            ×
-          </button>
-        </div>
-        <label for="customerName">Nama customer</label>
-        <input id="customerName" maxlength="100" required />
-        <label for="customerPhone">Nomor WhatsApp</label>
-        <input
-          id="customerPhone"
-          placeholder="6281234567890"
-          inputmode="numeric"
-          required
-        />
-        <label for="customerNote">Catatan (opsional)</label>
-        <textarea id="customerNote" rows="2" maxlength="500"></textarea>
-        <p id="customerError" class="error-text hidden" role="alert"></p>
-        <div class="modal-actions">
-          <button type="button" class="btn ghost" data-close>Batal</button>
-          <button type="submit" id="saveCustomerBtn" class="btn primary">
-            Simpan
           </button>
         </div>
       </form>

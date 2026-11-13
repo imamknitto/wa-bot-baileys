@@ -1,9 +1,4 @@
-import {
-  openDb,
-  migrate,
-  type Db,
-  type Migration,
-} from "./sqlite.js";
+import { openDb, migrate, type Db, type Migration } from "./sqlite.js";
 
 export interface MessageLogInput {
   sessionId: string;
@@ -15,6 +10,11 @@ export interface MessageLogInput {
   status: "sent" | "failed";
   error?: string | null;
   createdAt?: number;
+  salesId?: string | null;
+  agentId?: string | null;
+  customerRef?: string | null;
+  recipientName?: string | null;
+  referenceId?: string | null;
 }
 
 export interface MessageLogRow {
@@ -28,30 +28,15 @@ export interface MessageLogRow {
   status: "sent" | "failed";
   error: string | null;
   createdAt: number;
+  salesId: string | null;
+  agentId: string | null;
+  customerId: string | null;
+  customerName: string | null;
+  referenceId: string | null;
 }
 
 export interface MessageLogPage {
   messages: MessageLogRow[];
-  nextCursor: number | null;
-}
-
-export interface CustomerRow {
-  id: number;
-  name: string;
-  phone: string;
-  note: string | null;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface CustomerInput {
-  name: string;
-  phone: string;
-  note: string | null;
-}
-
-export interface CustomerPage {
-  customers: CustomerRow[];
   nextCursor: number | null;
 }
 
@@ -60,10 +45,19 @@ export interface RecentMessageRow {
   sessionId: string;
   source: "send" | "broadcast";
   to: string;
+  salesId: string | null;
+  customerId: string | null;
   customerName: string | null;
   text: string | null;
   status: "sent" | "failed";
   error: string | null;
+  createdAt: number;
+}
+
+export interface SessionMeta {
+  sessionId: string;
+  salesId: string;
+  agentId: string | null;
   createdAt: number;
 }
 
@@ -169,6 +163,68 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 5,
+    sql: `
+      DROP TABLE IF EXISTS customers;
+
+      CREATE TABLE IF NOT EXISTS session_meta (
+        session_id TEXT PRIMARY KEY,
+        sales_id TEXT NOT NULL,
+        agent_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_meta_sales ON session_meta(sales_id);
+
+      CREATE TABLE IF NOT EXISTS session_tokens (
+        token_hash TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        revoked_at INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_tokens_session
+        ON session_tokens(session_id);
+
+      ALTER TABLE message_log ADD COLUMN sales_id TEXT;
+      ALTER TABLE message_log ADD COLUMN agent_id TEXT;
+      ALTER TABLE message_log ADD COLUMN customer_ref TEXT;
+      ALTER TABLE message_log ADD COLUMN recipient_name TEXT;
+      ALTER TABLE message_log ADD COLUMN reference_id TEXT;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_message_log_reference
+        ON message_log(session_id, reference_id)
+        WHERE reference_id IS NOT NULL;
+
+      ALTER TABLE broadcast_jobs ADD COLUMN reference_id TEXT;
+      ALTER TABLE broadcast_jobs ADD COLUMN sales_id TEXT;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_jobs_reference
+        ON broadcast_jobs(session_id, reference_id)
+        WHERE reference_id IS NOT NULL;
+
+      ALTER TABLE broadcast_recipients ADD COLUMN customer_ref TEXT;
+      ALTER TABLE broadcast_recipients ADD COLUMN recipient_name TEXT;
+      ALTER TABLE broadcast_recipients ADD COLUMN sales_id TEXT;
+
+      CREATE TABLE IF NOT EXISTS webhook_events (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        session_id TEXT,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        delivered_at INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_webhook_events_due
+        ON webhook_events(status, next_attempt_at);
+    `,
+  },
 ];
 
 let db: Db | null = null;
@@ -188,8 +244,9 @@ export function recordMessage(input: MessageLogInput): number {
     .prepare(
       `INSERT INTO message_log (
         session_id, direction, source, to_jid, text, broadcast_job_id,
-        wa_message_id, status, error, created_at
-      ) VALUES (?, 'out', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        wa_message_id, status, error, created_at, sales_id, agent_id,
+        customer_ref, recipient_name, reference_id
+      ) VALUES (?, 'out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.sessionId,
@@ -201,8 +258,25 @@ export function recordMessage(input: MessageLogInput): number {
       input.status,
       input.error ?? null,
       input.createdAt ?? Date.now(),
+      input.salesId ?? null,
+      input.agentId ?? null,
+      input.customerRef ?? null,
+      input.recipientName ?? null,
+      input.referenceId ?? null,
     );
   return Number(result.lastInsertRowid);
+}
+
+export function findMessageByReference(
+  sessionId: string,
+  referenceId: string,
+): MessageLogRow | null {
+  const row = getAppDb()
+    .prepare(
+      "SELECT * FROM message_log WHERE session_id = ? AND reference_id = ?",
+    )
+    .get(sessionId, referenceId);
+  return row ? toMessageRow(row) : null;
 }
 
 export function listMessages(
@@ -229,20 +303,31 @@ export function listMessages(
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
   return {
-    messages: page.map((row) => ({
-      id: Number(row.id),
-      sessionId: String(row.session_id),
-      source: row.source as "send" | "broadcast",
-      to: String(row.to_jid),
-      text: row.text === null ? null : String(row.text),
-      broadcastJobId:
-        row.broadcast_job_id === null ? null : String(row.broadcast_job_id),
-      messageId: row.wa_message_id === null ? null : String(row.wa_message_id),
-      status: row.status as "sent" | "failed",
-      error: row.error === null ? null : String(row.error),
-      createdAt: Number(row.created_at),
-    })),
+    messages: page.map(toMessageRow),
     nextCursor: hasMore ? Number(page[page.length - 1]?.id) : null,
+  };
+}
+
+function toMessageRow(row: Record<string, unknown>): MessageLogRow {
+  return {
+    id: Number(row.id),
+    sessionId: String(row.session_id),
+    source: row.source as "send" | "broadcast",
+    to: String(row.to_jid),
+    text: row.text === null ? null : String(row.text),
+    broadcastJobId:
+      row.broadcast_job_id === null ? null : String(row.broadcast_job_id),
+    messageId: row.wa_message_id === null ? null : String(row.wa_message_id),
+    status: row.status as "sent" | "failed",
+    error: row.error === null ? null : String(row.error),
+    createdAt: Number(row.created_at),
+    salesId: row.sales_id === null ? null : String(row.sales_id),
+    agentId: row.agent_id === null ? null : String(row.agent_id),
+    customerId: row.customer_ref === null ? null : String(row.customer_ref),
+    customerName:
+      row.recipient_name === null ? null : String(row.recipient_name),
+    referenceId:
+      row.reference_id === null ? null : String(row.reference_id),
   };
 }
 
@@ -301,18 +386,13 @@ export function listRecentMessages(
   limit: number,
   sessionId?: string,
 ): RecentMessageRow[] {
-  const db = getAppDb();
   const sql = `
-    SELECT m.id, m.session_id, m.source, m.to_jid, m.text, m.status, m.error,
-           m.created_at, c.name AS customer_name
-    FROM message_log m
-    LEFT JOIN customers c ON c.phone = CASE
-      WHEN instr(m.to_jid, '@') > 0
-        THEN substr(m.to_jid, 1, instr(m.to_jid, '@') - 1)
-      ELSE m.to_jid
-    END
-    ${sessionId ? "WHERE m.session_id = ?" : ""}
-    ORDER BY m.id DESC LIMIT ?`;
+    SELECT id, session_id, source, to_jid, sales_id, customer_ref,
+           recipient_name, text, status, error, created_at
+    FROM message_log
+    ${sessionId ? "WHERE session_id = ?" : ""}
+    ORDER BY id DESC LIMIT ?`;
+  const db = getAppDb();
   const rows = sessionId
     ? db.prepare(sql).all(sessionId, limit)
     : db.prepare(sql).all(limit);
@@ -321,8 +401,10 @@ export function listRecentMessages(
     sessionId: String(row.session_id),
     source: row.source as "send" | "broadcast",
     to: String(row.to_jid),
+    salesId: row.sales_id === null ? null : String(row.sales_id),
+    customerId: row.customer_ref === null ? null : String(row.customer_ref),
     customerName:
-      row.customer_name === null ? null : String(row.customer_name),
+      row.recipient_name === null ? null : String(row.recipient_name),
     text: row.text === null ? null : String(row.text),
     status: row.status as "sent" | "failed",
     error: row.error === null ? null : String(row.error),
@@ -330,109 +412,54 @@ export function listRecentMessages(
   }));
 }
 
-export function listCustomers(
-  limit: number,
-  cursor?: number,
-  query?: string,
-): CustomerPage {
-  const clauses: string[] = [];
-  const params: (string | number)[] = [];
-  const trimmed = query?.trim() ?? "";
-  if (trimmed) {
-    clauses.push("(name LIKE ? OR phone LIKE ?)");
-    params.push(`%${trimmed}%`, `%${trimmed}%`);
-  }
-  if (cursor !== undefined) {
-    clauses.push("id < ?");
-    params.push(cursor);
-  }
-  const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-  const rows = getAppDb()
-    .prepare(
-      `SELECT * FROM customers ${where} ORDER BY id DESC LIMIT ?`,
-    )
-    .all(...params, limit + 1);
-
-  const hasMore = rows.length > limit;
-  const page = hasMore ? rows.slice(0, limit) : rows;
-  return {
-    customers: page.map(toCustomerRow),
-    nextCursor: hasMore ? Number(page[page.length - 1]?.id) : null,
-  };
-}
-
-export function getCustomer(id: number): CustomerRow | null {
-  const row = getAppDb()
-    .prepare("SELECT * FROM customers WHERE id = ?")
-    .get(id);
-  return row ? toCustomerRow(row) : null;
-}
-
-export function getCustomerByPhone(phone: string): CustomerRow | null {
-  const row = getAppDb()
-    .prepare("SELECT * FROM customers WHERE phone = ?")
-    .get(phone);
-  return row ? toCustomerRow(row) : null;
-}
-
-export function getCustomersByIds(ids: number[]): CustomerRow[] {
-  if (ids.length === 0) return [];
-  const placeholders = ids.map(() => "?").join(", ");
-  return getAppDb()
-    .prepare(
-      `SELECT * FROM customers WHERE id IN (${placeholders}) ORDER BY id`,
-    )
-    .all(...ids)
-    .map(toCustomerRow);
-}
-
-export function createCustomer(input: CustomerInput): CustomerRow {
+export function setSessionMeta(
+  sessionId: string,
+  salesId: string,
+  agentId: string | null,
+): SessionMeta {
   const now = Date.now();
-  const result = getAppDb()
+  getAppDb()
     .prepare(
-      `INSERT INTO customers (name, phone, note, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO session_meta (session_id, sales_id, agent_id, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         sales_id = excluded.sales_id,
+         agent_id = excluded.agent_id`,
     )
-    .run(input.name, input.phone, input.note, now, now);
-  return getCustomer(Number(result.lastInsertRowid)) as CustomerRow;
+    .run(sessionId, salesId, agentId, now);
+  return getSessionMeta(sessionId) as SessionMeta;
 }
 
-export function updateCustomer(
-  id: number,
-  input: CustomerInput,
-): CustomerRow | null {
-  const result = getAppDb()
-    .prepare(
-      `UPDATE customers SET name = ?, phone = ?, note = ?, updated_at = ?
-       WHERE id = ?`,
-    )
-    .run(input.name, input.phone, input.note, Date.now(), id);
-  if (Number(result.changes) === 0) return null;
-  return getCustomer(id);
+export function getSessionMeta(sessionId: string): SessionMeta | null {
+  const row = getAppDb()
+    .prepare("SELECT * FROM session_meta WHERE session_id = ?")
+    .get(sessionId);
+  return row ? toSessionMeta(row) : null;
 }
 
-export function deleteCustomer(id: number): boolean {
+export function listSessionMeta(): Record<string, SessionMeta> {
+  const rows = getAppDb().prepare("SELECT * FROM session_meta").all();
+  const result: Record<string, SessionMeta> = {};
+  for (const row of rows) {
+    const meta = toSessionMeta(row);
+    result[meta.sessionId] = meta;
+  }
+  return result;
+}
+
+export function deleteSessionMeta(sessionId: string): boolean {
   const result = getAppDb()
-    .prepare("DELETE FROM customers WHERE id = ?")
-    .run(id);
+    .prepare("DELETE FROM session_meta WHERE session_id = ?")
+    .run(sessionId);
   return Number(result.changes) > 0;
 }
 
-export function countCustomers(): number {
-  const row = getAppDb()
-    .prepare("SELECT COUNT(*) AS count FROM customers")
-    .get();
-  return Number(row?.count ?? 0);
-}
-
-function toCustomerRow(row: Record<string, unknown>): CustomerRow {
+function toSessionMeta(row: Record<string, unknown>): SessionMeta {
   return {
-    id: Number(row.id),
-    name: String(row.name),
-    phone: String(row.phone),
-    note: row.note === null ? null : String(row.note),
+    sessionId: String(row.session_id),
+    salesId: String(row.sales_id),
+    agentId: row.agent_id === null ? null : String(row.agent_id),
     createdAt: Number(row.created_at),
-    updatedAt: Number(row.updated_at),
   };
 }
 

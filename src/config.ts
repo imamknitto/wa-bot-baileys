@@ -3,6 +3,10 @@ export interface Config {
   dbPath: string;
   maxSessions: number;
   logRetentionDays: number;
+  webhookUrl: string | null;
+  webhookSecret: string | null;
+  webhookMaxAttempts: number;
+  webhookRetentionDays: number;
 }
 
 let cached: Config | null = null;
@@ -25,13 +29,35 @@ function pathEnv(name: string, fallback: string): string {
   return value;
 }
 
+function optionalEnv(name: string): string | null {
+  const raw = process.env[name];
+  if (raw === undefined) return null;
+  const value = raw.trim();
+  return value === "" ? null : value;
+}
+
 export function getConfig(): Config {
   if (cached) return cached;
+
+  const webhookUrl = optionalEnv("WEBHOOK_URL");
+  const webhookSecret = optionalEnv("WEBHOOK_SECRET");
+  if (webhookUrl && !webhookSecret) {
+    throw new Error("WEBHOOK_SECRET is required when WEBHOOK_URL is set");
+  }
+
   cached = {
     port: intEnv("PORT", 8365, 1, 65535),
     dbPath: pathEnv("DB_PATH", "data/app.db"),
     maxSessions: intEnv("MAX_SESSIONS", 10, 1, 1000),
     logRetentionDays: intEnv("LOG_RETENTION_DAYS", 30, 1, 3650),
+    webhookUrl,
+    webhookSecret,
+    webhookMaxAttempts: intEnv("WEBHOOK_MAX_ATTEMPTS", 5, 1, 20),
+    webhookRetentionDays: intEnv("WEBHOOK_RETENTION_DAYS", 7, 1, 365),
   };
   return cached;
+}
+
+export function isWebhookEnabled(): boolean {
+  return getConfig().webhookUrl !== null;
 }

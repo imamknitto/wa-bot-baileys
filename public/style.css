@@ -650,6 +650,18 @@ textarea::placeholder {
   margin-top: 0;
 }
 
+.recipient-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.recipient-form input {
+  margin-top: 0;
+}
+
 /* ---------- Customers ---------- */
 
 .customer-list {

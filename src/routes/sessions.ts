@@ -1,7 +1,16 @@
 import { Hono } from 'hono'
 import QRCode from 'qrcode'
 import { z } from 'zod'
-import { countMessagesTodayBySession } from '../db/app.js'
+import { issueSessionToken, revokeSessionTokens } from '../auth/session-token.js'
+import type { AppEnv } from '../app.js'
+import { isAdmin } from './guards.js'
+import {
+  countMessagesTodayBySession,
+  deleteSessionMeta,
+  getSessionMeta,
+  listSessionMeta,
+  setSessionMeta,
+} from '../db/app.js'
 import {
   SessionActiveError,
   SessionLimitError,
@@ -12,30 +21,19 @@ import {
   listSessions,
   logoutSession,
   startSession,
+  type SessionView,
 } from '../wa/manager.js'
-import { sessionIdSchema } from '../validation.js'
+import {
+  createSessionSchema,
+  digitsOnly,
+  sessionIdSchema,
+} from '../validation.js'
 
-const createSessionSchema = z
-  .object({
-    sessionId: sessionIdSchema,
-    mode: z.enum(['pairing', 'qr']).default('pairing'),
-    phone: z.string().optional(),
-  })
-  .superRefine((value, ctx) => {
-    if (value.mode !== 'pairing') return
-    const digits = digitsOnly(value.phone ?? '')
-    if (digits.length < 8 || digits.length > 15) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'phone must contain 8-15 digits',
-        path: ['phone'],
-      })
-    }
-  })
-
-const app = new Hono()
+const app = new Hono<AppEnv>()
 
 app.post('/', async (c) => {
+  if (!isAdmin(c)) return c.json({ error: 'Forbidden' }, 403)
+
   let body: unknown
   try {
     body = await c.req.json()
@@ -51,12 +49,20 @@ app.post('/', async (c) => {
     )
   }
 
-  const { sessionId, mode } = parsed.data
+  const { salesId, agentId, mode } = parsed.data
+  const sessionId = parsed.data.sessionId ?? salesId
   const phone = mode === 'pairing' ? digitsOnly(parsed.data.phone ?? '') : null
+
+  const existingMeta = getSessionMeta(sessionId)
+  if (existingMeta && existingMeta.salesId !== salesId) {
+    return c.json({ error: 'Session is owned by another sales' }, 409)
+  }
 
   try {
     const session = await startSession(sessionId, { mode, phone })
-    return c.json({ ok: true, ...session }, 202)
+    const meta = setSessionMeta(sessionId, salesId, agentId ?? null)
+    const token = issueSessionToken(sessionId)
+    return c.json({ ok: true, ...session, ...meta, token }, 202)
   } catch (err) {
     if (err instanceof SessionActiveError) {
       return c.json({ ok: false, error: err.message }, 409)
@@ -71,9 +77,17 @@ app.post('/', async (c) => {
 
 app.get('/', (c) => {
   const sentToday = countMessagesTodayBySession()
+  const meta = listSessionMeta()
+  const tokenSessionId = c.get('tokenSessionId')
+  const visible = tokenSessionId
+    ? listSessions().filter((session) => session.sessionId === tokenSessionId)
+    : listSessions()
+
   return c.json({
-    sessions: listSessions().map((session) => ({
+    sessions: visible.map((session) => ({
       ...session,
+      salesId: meta[session.sessionId]?.salesId ?? null,
+      agentId: meta[session.sessionId]?.agentId ?? null,
       sentToday: sentToday[session.sessionId] ?? 0,
     })),
   })
@@ -85,7 +99,7 @@ app.get('/:id/status', (c) => {
 
   const session = getSessionView(parsed.data)
   if (!session) return c.json({ error: 'Session not found' }, 404)
-  return c.json(session)
+  return c.json(withMeta(session))
 })
 
 app.get('/:id/qr', async (c) => {
@@ -111,26 +125,56 @@ app.get('/:id/pairing', (c) => {
   return c.json(pairing)
 })
 
+app.post('/:id/token', (c) => {
+  if (!isAdmin(c)) return c.json({ error: 'Forbidden' }, 403)
+
+  const parsed = sessionIdSchema.safeParse(c.req.param('id'))
+  if (!parsed.success) return c.json({ error: 'Invalid sessionId' }, 400)
+
+  if (!getSessionView(parsed.data)) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  const token = issueSessionToken(parsed.data)
+  c.header('Cache-Control', 'no-store')
+  return c.json({ ok: true, sessionId: parsed.data, token })
+})
+
 app.post('/:id/logout', async (c) => {
+  if (!isAdmin(c)) return c.json({ error: 'Forbidden' }, 403)
+
   const parsed = sessionIdSchema.safeParse(c.req.param('id'))
   if (!parsed.success) return c.json({ error: 'Invalid sessionId' }, 400)
 
   const session = await logoutSession(parsed.data)
   if (!session) return c.json({ error: 'Session not found' }, 404)
+  revokeSessionTokens(parsed.data)
   return c.json({ ok: true, sessionId: session.sessionId, status: session.status })
 })
 
 app.delete('/:id', async (c) => {
+  if (!isAdmin(c)) return c.json({ error: 'Forbidden' }, 403)
+
   const parsed = sessionIdSchema.safeParse(c.req.param('id'))
   if (!parsed.success) return c.json({ error: 'Invalid sessionId' }, 400)
 
   const deleted = await deleteSession(parsed.data)
   if (!deleted) return c.json({ error: 'Session not found' }, 404)
+  revokeSessionTokens(parsed.data)
+  deleteSessionMeta(parsed.data)
   return c.json({ ok: true, sessionId: parsed.data })
 })
 
-function digitsOnly(value: string): string {
-  return value.replace(/\D/g, '')
+function withMeta(session: SessionView): SessionView & {
+  salesId: string | null
+  agentId: string | null
+} {
+  const meta = getSessionMeta(session.sessionId)
+  return {
+    ...session,
+    salesId: meta?.salesId ?? null,
+    agentId: meta?.agentId ?? null,
+  }
 }
 
 export default app
