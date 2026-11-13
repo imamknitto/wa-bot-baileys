@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { openDb, migrate } from '../src/db/sqlite.ts';
 
-const path = 'data/.smoke-migrate.db';
+const path = fileURLToPath(new URL('../data/.smoke-migrate.db', import.meta.url));
 rmSync(path, { force: true });
 
 const legacy = [

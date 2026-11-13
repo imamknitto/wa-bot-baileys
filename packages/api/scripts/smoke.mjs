@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-const dbPath = 'data/.smoke.db';
+const dbPath = fileURLToPath(new URL('../data/.smoke.db', import.meta.url));
 rmSync(dbPath, { force: true });
 process.env.API_KEY = 'secret';
 process.env.DB_PATH = dbPath;

@@ -1,5 +1,10 @@
+import { existsSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 export interface Config {
   port: number;
+  host: string;
   dbPath: string;
   maxSessions: number;
   logRetentionDays: number;
@@ -11,6 +16,35 @@ export interface Config {
 
 let cached: Config | null = null;
 
+let projectRootCache: string | null | undefined;
+
+/**
+ * Monorepo root, detected by walking up from this file looking for
+ * pnpm-workspace.yaml. Relative DB_PATH values resolve against it so the
+ * database location does not depend on the process working directory.
+ */
+function getProjectRoot(): string | null {
+  if (projectRootCache !== undefined) return projectRootCache;
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (existsSync(resolve(dir, "pnpm-workspace.yaml"))) {
+      projectRootCache = dir;
+      return dir;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  projectRootCache = null;
+  return null;
+}
+
+function resolveDbPath(value: string): string {
+  if (isAbsolute(value)) return value;
+  const root = getProjectRoot();
+  return root ? resolve(root, value) : resolve(value);
+}
+
 function intEnv(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return fallback;
@@ -19,6 +53,12 @@ function intEnv(name: string, fallback: number, min: number, max: number): numbe
     throw new Error(`${name} must be an integer between ${min} and ${max}`);
   }
   return value;
+}
+
+function stringEnv(name: string, fallback: string): string {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  return raw.trim();
 }
 
 function pathEnv(name: string, fallback: string): string {
@@ -47,7 +87,8 @@ export function getConfig(): Config {
 
   cached = {
     port: intEnv("PORT", 8365, 1, 65535),
-    dbPath: pathEnv("DB_PATH", "data/app.db"),
+    host: stringEnv("HOST", "0.0.0.0"),
+    dbPath: resolveDbPath(pathEnv("DB_PATH", "data/app.db")),
     maxSessions: intEnv("MAX_SESSIONS", 10, 1, 1000),
     logRetentionDays: intEnv("LOG_RETENTION_DAYS", 30, 1, 3650),
     webhookUrl,

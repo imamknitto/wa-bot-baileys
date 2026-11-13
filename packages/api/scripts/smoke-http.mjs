@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-const dbPath = 'data/.smoke-http.db';
+const dbPath = fileURLToPath(new URL('../data/.smoke-http.db', import.meta.url));
 rmSync(dbPath, { force: true });
 process.env.API_KEY = 'secret';
 process.env.DB_PATH = dbPath;
@@ -19,6 +20,15 @@ const request = (path, init = {}) => app.request(path, init);
 
 // public
 assert.equal((await request('/')).status, 200);
+
+// docs (public): reference page + OpenAPI document
+assert.equal((await request('/docs')).status, 200);
+const openapi = await request('/docs/openapi.json');
+assert.equal(openapi.status, 200);
+const document = await openapi.json();
+assert.equal(document.openapi, '3.1.0');
+assert.ok(document.paths['/sessions/{id}/send']);
+assert.ok(document.components.schemas.Error);
 
 // no credentials
 assert.equal((await request('/sessions/sales-a/status')).status, 401);

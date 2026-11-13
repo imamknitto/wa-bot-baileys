@@ -4,16 +4,16 @@ Kontrak HTTP API untuk `wa-bot-service`. Dokumen ini adalah acuan request/respon
 
 - Base URL: `http://localhost:<PORT>` (default `http://localhost:8365`)
 - Format: JSON (`Content-Type: application/json` untuk request ber-body)
-- Auth: `x-api-key` (admin) atau `Authorization: Bearer <token sesi>` untuk `/sessions/*`; `/stats` dan `/messages` hanya `x-api-key`; `GET /` publik
+- Auth: `x-api-key` (admin) atau `Authorization: Bearer <token sesi>` untuk `/sessions/*`; `/stats` dan `/messages` hanya `x-api-key`; `GET /` dan `GET /docs` publik
 - Semua timestamp memakai epoch milliseconds
+- Referensi interaktif: `GET /docs` (Scalar) dari dokumen OpenAPI `GET /docs/openapi.json`
 
 ## Daftar isi
 
 - [Konvensi](#konvensi)
 - [Objek umum](#objek-umum)
 - [Service](#service)
-- [Sesi](#sesi)
-- [Pesan](#pesan)
+- [Sesi](#sesi)- [Pesan](#pesan)
 - [Broadcast](#broadcast)
 - [Statistik dan riwayat](#statistik-dan-riwayat)
 - [Webhook](#webhook)
@@ -25,7 +25,7 @@ Kontrak HTTP API untuk `wa-bot-service`. Dokumen ini adalah acuan request/respon
 
 Service ini punya dua tingkat akses.
 
-**Admin** — dipakai backend aplikasi remarketing:
+**Admin** — dipakai backend aplikasi pemanggil:
 
 ```http
 x-api-key: <API_KEY>
@@ -93,7 +93,7 @@ Error validasi menambahkan `details` dari Zod:
 | `jobId`                | UUID                                                                   |
 | `to`                   | 8–15 digit (otomatis menjadi `<digit>@s.whatsapp.net`) atau JID lengkap |
 | `recipients`           | 1–100 item untuk broadcast                                             |
-| `customerId`           | String 1–128 karakter; ID customer di aplikasi remarketing             |
+| `customerId`           | String 1–128 karakter; ID customer di aplikasi pemanggil                |
 | `customerName`/`name`  | 1–100 karakter                                                         |
 | `referenceId`          | String 1–128 karakter, unik per sesi                                   |
 | `text`                 | 1–4000 karakter                                                        |
@@ -222,6 +222,15 @@ Info service publik. Tidak memerlukan API key.
 { "name": "wa-bot-service", "version": "1.0.0", "status": "ok" }
 ```
 
+### `GET /docs`
+
+API reference interaktif (Scalar) yang merender dokumen OpenAPI di bawah. Publik, tidak memerlukan API key. Bisa dipakai untuk mencoba request langsung dengan mengisi `x-api-key` atau bearer token lewat tombol Authorize.
+
+### `GET /docs/openapi.json`
+
+Dokumen OpenAPI 3.1 yang menjadi sumber halaman `/docs`. Publik. Berguna untuk impor Postman/Insomnia atau codegen client. Skema request dan path param di-generate dari schema Zod di `packages/api/src/validation.ts`, jadi selalu sinkron dengan validasi route.
+
+
 ## Sesi
 
 ### `POST /sessions`
@@ -244,7 +253,7 @@ Jika `sessionId` sudah ada dan berstatus `connected`/`connecting`, atau jumlah s
 
 | Field       | Wajib | Keterangan                                                        |
 | ----------- | ----- | ----------------------------------------------------------------- |
-| `salesId`   | ya    | ID sales di aplikasi remarketing                                  |
+| `salesId`   | ya    | ID sales di aplikasi pemanggil                                    |
 | `agentId`   | tidak | ID agent, disimpan untuk audit webhook                             |
 | `sessionId` | tidak | Default = `salesId`. Lihat [batasan input](#batasan-input)         |
 | `mode`      | tidak | `pairing` (default) atau `qr`                                     |
@@ -270,7 +279,7 @@ Jika `sessionId` sudah ada dan berstatus `connected`/`connecting`, atau jumlah s
 }
 ```
 
-`token` hanya dikembalikan di respons ini. Simpan di aplikasi remarketing dan kirim sebagai `Authorization: Bearer <token>` untuk request atas nama sales tersebut.
+`token` hanya dikembalikan di respons ini. Simpan di aplikasi pemanggil dan kirim sebagai `Authorization: Bearer <token>` untuk request atas nama sales tersebut.
 
 **Error**
 
@@ -360,6 +369,32 @@ Kode pairing terakhir untuk sesi mode `pairing`.
 
 **Error:** `400`, `401`, `403`, `404`.
 
+### `POST /sessions/:id/login`
+
+Admin only. Menautkan ulang perangkat untuk sesi yang sudah logout tanpa membuat sesi baru dan tanpa menerbitkan token baru. Sesi dijalankan kembali dalam mode `qr`; ambil QR lewat `GET /sessions/:id/qr`. `salesId`, `agentId`, dan token sesi yang ada tidak berubah.
+
+`session_meta` untuk `:id` harus ada (`404` jika tidak). Status `connected`/`connecting` menghasilkan `409`.
+
+**Response `202`**
+
+```json
+{
+  "ok": true,
+  "sessionId": "sales-12",
+  "mode": "qr",
+  "status": "connecting",
+  "connected": false,
+  "me": null,
+  "hasQr": false,
+  "hasPairingCode": false,
+  "pairingError": null,
+  "salesId": "S-12",
+  "agentId": "A-3"
+}
+```
+
+**Error:** `400`, `401`, `403` (memakai token sales), `404`, `409`, `500`.
+
 ### `POST /sessions/:id/logout`
 
 Admin only. Logout dari WhatsApp, hapus auth sesi dari SQLite, dan revoke semua token sesi. Job broadcast yang berjalan ditandai `failed`.
@@ -406,7 +441,7 @@ Kirim satu pesan teks. Service tidak menyimpan customer; data penerima dikirim i
 | -------------- | ----- | --------------------------------------------------------------- |
 | `to`           | ya    | Nomor 8–15 digit atau JID lengkap                                |
 | `text`         | ya    | 1–4000 karakter, dikirim apa adanya                              |
-| `customerId`   | tidak | ID customer di aplikasi remarketing, disimpan sebagai referensi  |
+| `customerId`   | tidak | ID customer di aplikasi pemanggil, disimpan sebagai referensi    |
 | `customerName` | tidak | Nama penerima untuk riwayat dan webhook                          |
 | `referenceId`  | tidak | Idempotency key per sesi                                         |
 
@@ -492,7 +527,7 @@ Memulai job broadcast asinkron. Respons langsung `202`; pengiriman berjalan di b
 | ------------- | ----- | ------- | -------------------------------------------------------------- |
 | `recipients`  | ya    | –       | 1–100 penerima; tiap item punya `to` wajib                     |
 | `recipients[].to` | ya | –      | Nomor/JID penerima                                             |
-| `recipients[].customerId` | tidak | – | ID customer di aplikasi remarketing                      |
+| `recipients[].customerId` | tidak | – | ID customer di aplikasi pemanggil                        |
 | `recipients[].name` | tidak | –   | Nama penerima untuk riwayat/webhook                            |
 | `recipients[].text` | tidak | –   | Override teks untuk penerima ini                               |
 | `text`        | ya    | –       | Teks default, 1–4000 karakter                                  |
