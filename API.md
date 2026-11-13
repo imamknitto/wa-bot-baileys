@@ -25,7 +25,7 @@ Kontrak HTTP API untuk `wa-bot-service`. Dokumen ini adalah acuan request/respon
 
 Service ini punya dua tingkat akses.
 
-**Admin** — dipakai backend aplikasi remarketing:
+**Admin** — dipakai backend aplikasi pemanggil:
 
 ```http
 x-api-key: <API_KEY>
@@ -93,7 +93,7 @@ Error validasi menambahkan `details` dari Zod:
 | `jobId`                | UUID                                                                   |
 | `to`                   | 8–15 digit (otomatis menjadi `<digit>@s.whatsapp.net`) atau JID lengkap |
 | `recipients`           | 1–100 item untuk broadcast                                             |
-| `customerId`           | String 1–128 karakter; ID customer di aplikasi remarketing             |
+| `customerId`           | String 1–128 karakter; ID customer di aplikasi pemanggil                |
 | `customerName`/`name`  | 1–100 karakter                                                         |
 | `referenceId`          | String 1–128 karakter, unik per sesi                                   |
 | `text`                 | 1–4000 karakter                                                        |
@@ -253,7 +253,7 @@ Jika `sessionId` sudah ada dan berstatus `connected`/`connecting`, atau jumlah s
 
 | Field       | Wajib | Keterangan                                                        |
 | ----------- | ----- | ----------------------------------------------------------------- |
-| `salesId`   | ya    | ID sales di aplikasi remarketing                                  |
+| `salesId`   | ya    | ID sales di aplikasi pemanggil                                    |
 | `agentId`   | tidak | ID agent, disimpan untuk audit webhook                             |
 | `sessionId` | tidak | Default = `salesId`. Lihat [batasan input](#batasan-input)         |
 | `mode`      | tidak | `pairing` (default) atau `qr`                                     |
@@ -279,7 +279,7 @@ Jika `sessionId` sudah ada dan berstatus `connected`/`connecting`, atau jumlah s
 }
 ```
 
-`token` hanya dikembalikan di respons ini. Simpan di aplikasi remarketing dan kirim sebagai `Authorization: Bearer <token>` untuk request atas nama sales tersebut.
+`token` hanya dikembalikan di respons ini. Simpan di aplikasi pemanggil dan kirim sebagai `Authorization: Bearer <token>` untuk request atas nama sales tersebut.
 
 **Error**
 
@@ -441,7 +441,7 @@ Kirim satu pesan teks. Service tidak menyimpan customer; data penerima dikirim i
 | -------------- | ----- | --------------------------------------------------------------- |
 | `to`           | ya    | Nomor 8–15 digit atau JID lengkap                                |
 | `text`         | ya    | 1–4000 karakter, dikirim apa adanya                              |
-| `customerId`   | tidak | ID customer di aplikasi remarketing, disimpan sebagai referensi  |
+| `customerId`   | tidak | ID customer di aplikasi pemanggil, disimpan sebagai referensi    |
 | `customerName` | tidak | Nama penerima untuk riwayat dan webhook                          |
 | `referenceId`  | tidak | Idempotency key per sesi                                         |
 
@@ -527,7 +527,7 @@ Memulai job broadcast asinkron. Respons langsung `202`; pengiriman berjalan di b
 | ------------- | ----- | ------- | -------------------------------------------------------------- |
 | `recipients`  | ya    | –       | 1–100 penerima; tiap item punya `to` wajib                     |
 | `recipients[].to` | ya | –      | Nomor/JID penerima                                             |
-| `recipients[].customerId` | tidak | – | ID customer di aplikasi remarketing                      |
+| `recipients[].customerId` | tidak | – | ID customer di aplikasi pemanggil                        |
 | `recipients[].name` | tidak | –   | Nama penerima untuk riwayat/webhook                            |
 | `recipients[].text` | tidak | –   | Override teks untuk penerima ini                               |
 | `text`        | ya    | –       | Teks default, 1–4000 karakter                                  |

@@ -39,10 +39,10 @@ Fetch https://hono.dev/llms.txt to find the page, then fetch it with the `Accept
 - All sessions with rows in `credentials` are restored at startup with a delay between sessions. Sessions that never finished pairing restore in QR mode.
 - Broadcast lives in `packages/api/src/broadcast/store.ts` (SQL queries, recovery) and `packages/api/src/broadcast/scheduler.ts` (1-second tick, `createJob`, `getJob`, `cancelJob`). Jobs and recipients are persisted, one running job per session, random delay per message (`delayMinMs` >= 10000, `delayMaxMs` <= 600000).
 - Broadcast takes an inline `recipients[]` array (`to`, `customerId?`, `name?`, `text?`). There is no customer table: this service never stores customer data. Recipients are deduplicated by normalized JID.
-- Text is sent verbatim (plain text). Template rendering (e.g. `{nama}`) belongs to the remarketing app, not this service.
+- Text is sent verbatim (plain text). Template rendering (e.g. `{nama}`) belongs to the calling app, not this service.
 - Every session is owned by one sales: `session_meta` (`sales_id`, `agent_id`) is written on `POST /sessions`, and `sessionId` defaults to `salesId`.
 - Session access uses per-session bearer tokens (`packages/api/src/auth/session-token.ts`, SHA-256 hashed, plaintext returned once). A sales token may only reach its own session; cross-session request returns `403`. Lifecycle endpoints (`POST /sessions`, `GET /sessions`, token rotation, logout, delete) are admin-only.
-- `x-api-key` remains the admin/service key for the remarketing backend, `/stats`, and `/messages`.
+- `x-api-key` remains the admin/service key for the calling backend, `/stats`, and `/messages`.
 - `referenceId` gives per-session idempotency: unique index on `message_log(session_id, reference_id)` and `broadcast_jobs(session_id, reference_id)`. Duplicate requests must not resend.
 - Webhooks live in `packages/api/src/webhook/store.ts` (queue table `webhook_events`) and `packages/api/src/webhook/dispatcher.ts` (2-second poll, HMAC-SHA256 signature over `<timestamp>.<raw body>`, exponential retry, max `WEBHOOK_MAX_ATTEMPTS`). Events: `message.sent`/`message.failed` per send, `broadcast.completed|failed|cancelled` per job with `results[]`. Never send webhooks inline inside a request handler.
 - Dashboard aggregates come from `GET /stats`; recent outgoing messages across sessions come from `GET /messages` (`packages/api/src/routes/history.ts`), reading `customer_ref`/`recipient_name` from `message_log`.
